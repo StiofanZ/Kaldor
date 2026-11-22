@@ -17,6 +17,8 @@ kaldorctl status
 
 每个版本使用同一个 install 命令。安装器在 JFFS 私有目录暂存并校验新程序，检查现有配置，启用状态下等待入口监听和透明规则就绪后切换活动槽。升级中已有代理连接会断开。进程启动或规则安装失败时重新启动原活动槽。通过 `kaldorctl rollback` 切回上一个可用槽；配置由两个槽共用。回退时同样检查兼容性。管理员可在管理页关闭服务并持久保存。正常升级不访问 MTD。当前发布使用管理员取得的可信摘要，不提供自动联网更新。
 
+启动时，组件先读取主 LAN 地址和接口，再创建工作进程。在工作进程写入就绪标记并完成分流规则安装后，启动命令才返回成功。进程启动和就绪的开机时间、端口绑定失败及就绪超时记录在 `/tmp/axproxy/service.log`，启动命令的返回值同时写入系统日志。
+
 安装前用 `df -k /jffs` 核对空间。保留的两个目标程序和更新暂存最多同时占用三份解压后的二进制空间，另外应为配置及已有 JFFS 数据保留余量。也可以提前为 `/jffs/axproxy` 挂载管理员专用的持久文件系统，要求文件系统在组件启动前已就绪。
 
 ## 设置
@@ -35,7 +37,7 @@ kaldorctl status
 
 ## 本地构建和验收
 
-Kaldor 0.2.0 的主程序、分流、网络入口和上游适配使用 Rust。数据转发在同一进程内完成。AnyTLS 会话、SOCKS5、VLESS/Vision 和 TLS 使用协议库。REALITY 的 X25519MLKEM768 密钥交换使用 BoringSSL。管理脚本和华硕管理页面板嵌入可执行文件。
+Kaldor 的主程序、分流、网络入口和上游适配使用 Rust。数据转发在同一进程内完成。AnyTLS 会话、SOCKS5、VLESS/Vision 和 TLS 使用协议库。REALITY 的 X25519MLKEM768 密钥交换使用 BoringSSL。管理脚本和华硕管理页面板嵌入可执行文件。
 
 构建环境使用 Rust 1.91.1、Zig 0.14.1、Python 3、CMake、libclang、make、tar 和 sha256sum。先安装 Rust 标准库目标。若 Zig 不在 PATH，可用环境变量 `ZIG` 指定。发布包和校验清单写入 `dist/`，可用 `DIST` 指定其他目录。
 
@@ -52,6 +54,7 @@ make package
 cargo test --locked
 rustup target add aarch64-unknown-linux-musl
 python3 build/cross.py aarch64 build --locked --release
+sudo unshare --pid --fork --mount-proc --net python3 test/startup.py target/aarch64-unknown-linux-musl/release/kaldor ./kaldorctl
 sudo unshare -n python3 test/interop.py target/aarch64-unknown-linux-musl/release/kaldor ./kaldorctl "$SING_BOX" "$XRAY" "$PREVIOUS_COMPONENT"
 ```
 

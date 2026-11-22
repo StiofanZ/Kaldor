@@ -71,22 +71,53 @@ stop() {
  fi
  rm -f "$run/pid" "$run/ready" "$run/routing-error"
 }
+# fd 3 reports startup to launch(). The supervisor owns the worker until exit.
+supervise() {
+ read -r started _ < /proc/uptime
+ "$1" serve "$2" "$3" "$4" "$run/ready" 3>&- &
+ child=$!
+ echo "$child" > "$run/pid"
+ for tick in 0 1 2 3 4 5 6; do
+  if [ -s "$run/ready" ] && running; then
+   read -r ready_at _ < /proc/uptime
+   echo "worker ready: pid=$child launch_uptime=$started ready_uptime=$ready_at"
+   echo ready >&3
+   exec 3>&-
+   code=0
+   wait "$child" || code=$?
+   echo "worker exited: status=$code"
+   "$AXPROXY_CTL" reaped "$child"
+   return
+  fi
+  if ! kill -0 "$child" 2>/dev/null; then
+   code=0
+   wait "$child" || code=$?
+   echo "worker exited before readiness: status=$code"
+   return 1
+  fi
+  [ "$tick" = 6 ] || sleep 1
+ done
+ echo "worker readiness timed out"
+ kill -KILL "$child" 2>/dev/null || :
+ wait "$child" 2>/dev/null || :
+ return 1
+}
 launch() {
  "$1" check "$2" || return 1
  "$1" enabled "$2" 2>/dev/null || return 0
- (
-  "$1" serve "$2" "$(nvram get lan_ipaddr)" "$(nvram get lan_ifname)" "$run/ready" &
-  child=$!
-  echo "$child" > "$run/pid"
-  wait "$child" || :
-  "$AXPROXY_CTL" reaped "$child"
- ) 9>&- </dev/null >"$run/service.log" 2>&1 &
- for i in 1 2 3 4 5 6; do
-  if [ -s "$run/ready" ] && running; then apply_rules "$1" "$2" && return 0; break; fi
-  if [ -s "$run/pid" ] && ! running; then break; fi
-  sleep 1
- done
- stop; return 1
+ lan=$(nvram get lan_ipaddr) && iface=$(nvram get lan_ifname) || return 1
+ [ -n "$lan" ] && [ -n "$iface" ] || return 1
+ rm -f "$run/ready" || return 1
+ # Closing fd 3 releases the reader as soon as the listeners are ready.
+ result=$(
+  (
+   exec 3>&1 9>&- </dev/null >"$run/service.log" 2>&1
+   supervise "$1" "$2" "$lan" "$iface"
+  ) &
+ )
+ if [ "$result" = ready ] && running && apply_rules "$1" "$2"; then return 0; fi
+ stop
+ return 1
 }
 case "$1" in
  configure)
@@ -94,7 +125,11 @@ case "$1" in
   stop
   if launch "$bin" "$root/config.new" && mv "$root/config.new" "$cfg"; then exit 0; fi
   stop; launch "$bin" "$cfg"; exit 1;;
- start) stop && launch "$bin" "$cfg";;
+ start)
+  code=0
+  stop && launch "$bin" "$cfg" || code=$?
+  logger -t kaldor "component start: status=$code" || :
+  exit "$code";;
  stop) stop;;
  reaped)
   if [ "$(cat "$run/pid" 2>/dev/null || true)" = "$2" ] && ! running; then
