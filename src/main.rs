@@ -45,7 +45,7 @@ async fn execute() -> Result<()> {
         "merge" => {
             cfg.merge(&Config::read(
                 args.get(2).context("previous configuration required")?,
-            )?);
+            )?)?;
             cfg.validate()?;
             println!("{}", serde_json::to_string(&cfg)?);
         }

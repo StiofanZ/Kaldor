@@ -33,7 +33,7 @@ kaldorctl status
 | SOCKS5 | 服务器、可选用户名和密码 | CONNECT，UDP ASSOCIATE |
 | VLESS/REALITY | 服务器、UUID、SNI、X25519 公钥、Short ID、可选 xtls-rprx-vision | TCP，UDP；传输层为 TCP |
 
-节点名须唯一。管理页不会回显保存的密码或 UUID。修改节点地址或认证身份时重新录入凭据。管理接口由固件的 httpd 会话鉴权，保存要求同源 POST。凭据存在权限受限的配置文件中。订阅转换可以在组件之外产生相同的节点与规则配置。
+节点旁的「设为默认出口」会选中该节点，点击「保存并应用」后生效，已有规则仍优先。改名时默认出口与规则会跟随同一节点；删除前需先移除它的出口引用。仅改名且留空凭据时，组件沿用原节点的凭据。节点名须唯一。管理页不会回显保存的密码或 UUID。修改节点地址或认证身份时重新录入凭据。管理接口由固件的 httpd 会话鉴权，保存要求同源 POST。凭据存在权限受限的配置文件中。订阅转换可以在组件之外产生相同的节点与规则配置。
 
 ## 本地构建和验收
 
@@ -48,10 +48,11 @@ make package
 
 源码包包含 Cargo.lock 和依赖源码。解包后在同一工具链环境运行 `CARGO_NET_OFFLINE=true make build` 可离线生成 ARMv7 二进制。
 
-互通测试在 Linux 的独立网络命名空间中运行。需要 iproute2、iptables、curl、OpenSSL、Python 3、flock、xt_TPROXY，以及同架构的 sing-box 和 Xray 测试服务端。以下示例使用 ARM64 Linux。最后一个参数是先前发布的、能够在该测试机运行的组件版本，用于检查双槽升级与回退。
+互通测试在 Linux 的独立网络命名空间中运行。需要 iproute2、iptables、curl、OpenSSL、Python 3、flock、xt_TPROXY，以及同架构的 sing-box 和 Xray 测试服务端。管理页回归通过 CHROMIUM 指定的本地 Chrome 或 Chromium 可执行文件运行。以下示例使用 ARM64 Linux。最后一个参数是先前发布的、能够在该测试机运行的组件版本，用于检查双槽升级与回退。
 
 ```sh
 cargo test --locked
+python3 test/panel.py "$CHROMIUM"
 rustup target add aarch64-unknown-linux-musl
 python3 build/cross.py aarch64 build --locked --release
 sudo unshare --pid --fork --mount-proc --net python3 test/startup.py target/aarch64-unknown-linux-musl/release/kaldor ./kaldorctl

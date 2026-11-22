@@ -34,6 +34,9 @@ pub struct Rule {
 #[derive(Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Upstream {
+    // Original row selected in the editor. Used only when applying a change.
+    #[serde(default, skip_serializing)]
+    previous_name: Option<String>,
     pub name: String,
     pub protocol: String,
     pub server: String,
@@ -118,20 +121,39 @@ impl Config {
             })
             .map_or(&self.default, |r| &r.outbound)
     }
-    pub fn merge(&mut self, old: &Self) {
-        for u in &mut self.upstreams {
-            if u.secret.is_empty()
-                && let Some(p) = old.upstreams.iter().find(|p| p.identity() == u.identity())
+    pub fn merge(&mut self, old: &Self) -> Result<()> {
+        let mut originals = HashSet::new();
+        for node in &mut self.upstreams {
+            let original = match node.previous_name.take() {
+                // The editor explicitly marks a newly added row.
+                Some(name) if name.is_empty() => continue,
+                Some(name) => {
+                    ensure!(originals.insert(name.clone()), "duplicate original node");
+                    Some(
+                        old.upstreams
+                            .iter()
+                            .find(|p| p.name == name)
+                            .context("original node no longer exists")?,
+                    )
+                }
+                None => old.upstreams.iter().find(|p| p.name == node.name),
+            };
+            if let Some(previous) = original
+                && node.secret.is_empty()
             {
-                u.secret.clone_from(&p.secret);
+                if previous.identity() == node.identity() {
+                    node.secret.clone_from(&previous.secret);
+                } else if node.protocol == "socks5" && !node.username.is_empty() {
+                    ensure!(previous.secret.is_empty(), "re-enter SOCKS5 credentials");
+                }
             }
         }
+        Ok(())
     }
 }
 impl Upstream {
-    fn identity(&self) -> [&str; 7] {
+    fn identity(&self) -> [&str; 6] {
         [
-            &self.name,
             &self.protocol,
             &self.server,
             &self.username,
@@ -213,6 +235,53 @@ mod tests {
             assert_eq!(cfg.route(ip.parse().unwrap(), None, 443, host), want);
         }
     }
+    #[test]
+    fn renames_keep_credentials_bound_to_the_original_peer() {
+        fn node(name: &str, server: &str) -> Upstream {
+            Upstream {
+                name: name.into(),
+                protocol: "anytls".into(),
+                server: server.into(),
+                ..Default::default()
+            }
+        }
+        let mut old = Config::default();
+        for name in ["east", "west"] {
+            let mut n = node(name, &format!("{name}.test:443"));
+            n.secret = format!("test-{name}");
+            old.upstreams.push(n);
+        }
+        let mut cfg = Config {
+            default: "west".into(),
+            ..Default::default()
+        };
+        for (original, target) in [("east", "west"), ("west", "east")] {
+            let mut n = node(target, &format!("{original}.test:443"));
+            n.previous_name = Some(original.into());
+            cfg.upstreams.push(n);
+        }
+        cfg.merge(&old).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.upstreams[0].secret, old.upstreams[0].secret);
+        assert_eq!(cfg.upstreams[1].secret, old.upstreams[1].secret);
+        assert!(
+            !serde_json::to_string(&cfg)
+                .unwrap()
+                .contains("previous_name")
+        );
+        for (original, name, host, reuse) in [
+            (None, "east", "east.test:443", true),
+            (Some(""), "east", "east.test:443", false),
+            (Some("east"), "renamed", "other.test:443", false),
+        ] {
+            let mut n = node(name, host);
+            n.previous_name = original.map(String::from);
+            cfg.upstreams = vec![n];
+            cfg.merge(&old).unwrap();
+            assert_eq!(!cfg.upstreams[0].secret.is_empty(), reuse);
+        }
+    }
+
     #[test]
     fn configuration_contract() {
         for s in [r#"{"unknown":1}"#, "{}{}", r#"{"devices":["invalid"]}"#] {

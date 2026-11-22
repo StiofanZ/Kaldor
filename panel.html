@@ -12,7 +12,7 @@ input[type=checkbox]{width:auto}.toggle{display:inline-block}textarea{width:100%
 button[type=submit]{background:#106481}.status{color:#c5efff}.actions{justify-content:flex-start;margin-top:16px}small{color:#d4dde1}#result{white-space:pre-wrap}
 </style>
 <header><h1>Kaldor 网络代理</h1><output class="status" id="status"></output></header>
-<form id="settings"><fieldset><label class="toggle"><input id="enabled" type="checkbox"> 启用代理</label>
+<form id="settings" inert><fieldset><label class="toggle"><input id="enabled" type="checkbox"> 启用代理</label>
 <p>局域网 HTTP 端口 7890，SOCKS5 端口 7891。</p>
 <label for="devices">透明代理设备</label><textarea id="devices" placeholder="每行一个源 IPv4 网段，单台设备用 /32"></textarea>
 <small>留空时只开放手动入口。透明接管覆盖所选设备的公网 IPv4 TCP 和 UDP。</small></fieldset>
@@ -30,14 +30,55 @@ function field(box,key,title,value,opts){
  if(Array.isArray(opts))choices(e,opts,value||opts[0]);else {e.type=opts||'text';e.value=value||'';}
  l.append(e);box.append(l);return e;
 }
-function names(){return ['direct','reject',...Array.from(byId('nodes').querySelectorAll('[data-key=name]'),e=>e.value.trim()).filter(Boolean)];}
-function refresh(){for(const s of [byId('fallback'),...byId('rules').querySelectorAll('[data-key=outbound]')]){const v=s.value;choices(s,names(),names().includes(v)?v:'direct');}}
-function entry(parent,title){const box=document.createElement('fieldset'),head=document.createElement('div');head.className='entry';const label=document.createElement('strong');label.textContent=title;head.append(label,button('删除',()=>{box.remove();refresh();}));box.append(head);parent.append(box);return box;}
+let nextNodeId=0;
+function targets(){
+ const entries=[['direct','direct'],['reject','reject']];
+ for(const box of byId('nodes').children){
+  entries.push([box.id,box.querySelector('[data-key=name]').value.trim()||'未命名节点']);
+ }
+ return entries;
+}
+function selectors(){return [byId('fallback'),...byId('rules').querySelectorAll('[data-key=outbound]')];}
+function populate(select,selected){
+ select.replaceChildren(...targets().map(([id,label])=>new Option(label,id)));
+ select.value=selected;
+}
+function refresh(){for(const select of selectors())populate(select,select.value||'direct');}
+function targetId(name){
+ const item=targets().find(([,label])=>label===name);
+ if(!item)throw Error('配置引用了不存在的出口：'+name);
+ return item[0];
+}
+function outbound(select){
+ if(['direct','reject'].includes(select.value))return select.value;
+ const box=byId(select.value);
+ if(!box)throw Error('请选择有效出口。');
+ return box.querySelector('[data-key=name]').value.trim();
+}
+function entry(parent,title){
+ const box=document.createElement('fieldset'),head=document.createElement('div');
+ head.className='entry';const label=document.createElement('strong');label.textContent=title;
+ head.append(label,button('删除',()=>{
+  if(box.id && selectors().some(select=>select.value===box.id)){
+   byId('result').textContent='该节点正在被引用，请先更改默认出口或对应规则。';return;
+  }
+  box.remove();refresh();
+ }));
+ box.append(head);parent.append(box);return box;
+}
 function node(data={}){
- const box=entry(byId('nodes'),'节点');const name=field(box,'name','名称',data.name);name.onchange=refresh;
+ const box=entry(byId('nodes'),'节点');
+ box.id='node-'+(++nextNodeId);box.dataset.original=data.name||'';
+ const name=field(box,'name','名称',data.name);
+ name.required=true;name.pattern='[A-Za-z0-9_\\-]{1,48}';
+ name.title='1 至 48 个英文字母、数字、下划线或连字符';name.oninput=refresh;
+ box.firstElementChild.append(button('设为默认出口',()=>{
+  byId('fallback').value=box.id;
+  byId('result').textContent='默认出口已选中，保存并应用后生效。';
+ }));
  const proto=field(box,'protocol','协议',data.protocol,['anytls','socks5','vless-reality']);
- field(box,'server','服务器和端口',data.server).placeholder='proxy.example:443';
- const user=field(box,'username','用户名',data.username),secret=field(box,'secret','密码或 UUID','','password');secret.autocomplete='new-password';if(data.name)secret.placeholder='留空保留原凭据';
+ const server=field(box,'server','服务器和端口',data.server);server.required=true;server.placeholder='proxy.example:443';
+ const user=field(box,'username','用户名',data.username),secret=field(box,'secret','密码或 UUID','','password');secret.autocomplete='new-password';if(data.name)secret.placeholder='只改名称可留空，改变认证信息请重填';
  const sni=field(box,'server_name','TLS 服务器名',data.server_name),key=field(box,'public_key','REALITY 公钥',data.public_key),sid=field(box,'short_id','Short ID',data.short_id);
  const flow=field(box,'flow','VLESS flow',data.flow,['','xtls-rprx-vision']);
  function visible(el,on){el.disabled=!on;el.parentNode.style.display=on?'':'none';}
@@ -47,21 +88,36 @@ function node(data={}){
 function rule(data={}){
  const box=entry(byId('rules'),'匹配条件');field(box,'source','源 CIDR',data.source);field(box,'destination','目的 CIDR',data.destination);
  field(box,'domain_suffix','域名后缀',data.domain_suffix);field(box,'port','目的端口',data.port,'number');
- field(box,'outbound','出口',data.outbound,names());
+ const select=field(box,'outbound','出口','',[]);populate(select,targetId(data.outbound||'direct'));
  box.append(button('上移',()=>{if(box.previousElementSibling)box.parentNode.insertBefore(box,box.previousElementSibling);}));
 }
-function rows(id){return Array.from(byId(id).children,box=>{const obj={};for(const e of box.querySelectorAll('[data-key]')){if(e.disabled)continue;const k=e.dataset.key;const v=k==='secret'?e.value:e.value.trim();if(v)obj[k]=k==='port'?Number(v):v;}return obj;});}
+function rows(id){
+ return Array.from(byId(id).children,box=>{
+  const obj=id==='nodes'?{previous_name:box.dataset.original}:{};
+  for(const e of box.querySelectorAll('[data-key]')){
+   if(e.disabled)continue;
+   const k=e.dataset.key;
+   const v=k==='outbound'?outbound(e):(k==='secret'?e.value:e.value.trim());
+   if(v)obj[k]=k==='port'?Number(v):v;
+  }
+  return obj;
+ });
+}
 async function load(){
  const [r,s]=await Promise.all([fetch('/axproxy-state.cgi',{cache:'no-store'}),fetch('/axproxy-status.cgi',{cache:'no-store'})]);
+ if(!r.ok||!s.ok)throw Error('无法读取配置，请重新登录管理页。');
  const c=await r.json();const status=(await s.text()).trim();byId('status').textContent='vCOMPONENT_VERSION · '+({running:'运行中',degraded:'透明路由异常',stopped:'已停止',uninstalled:'未安装'}[status]||'状态未知');
  byId('enabled').checked=c.enabled;byId('devices').value=(c.devices||[]).join('\n');
- byId('rules').textContent='';byId('nodes').textContent='';(c.upstreams||[]).forEach(node);(c.rules||[]).forEach(rule);refresh();byId('fallback').value=c.default||'direct';
+ byId('rules').textContent='';byId('nodes').textContent='';(c.upstreams||[]).forEach(node);(c.rules||[]).forEach(rule);refresh();byId('fallback').value=targetId(c.default||'direct');
+ byId('settings').inert=false;
 }
 byId('newNode').onclick=()=>node();byId('newRule').onclick=()=>rule();
-byId('settings').onsubmit=async e=>{e.preventDefault();const submit=e.submitter||document.querySelector('button[type=submit]');submit.disabled=true;const out=byId('result');out.textContent='正在应用…';
- try{const config={enabled:byId('enabled').checked,devices:byId('devices').value.trim().split(/\s+/).filter(Boolean),upstreams:rows('nodes'),rules:rows('rules'),default:byId('fallback').value};
+byId('settings').onsubmit=async e=>{e.preventDefault();if(byId('settings').inert)return;const submit=e.submitter||document.querySelector('button[type=submit]');submit.disabled=true;const out=byId('result');out.textContent='正在应用…';
+ try{const config={enabled:byId('enabled').checked,devices:byId('devices').value.trim().split(/\s+/).filter(Boolean),upstreams:rows('nodes'),rules:rows('rules'),default:outbound(byId('fallback'))};
+ const used=new Set(['direct','reject']);for(const n of config.upstreams){if(used.has(n.name))throw Error('节点名称重复或为保留名称：'+n.name);used.add(n.name);}
+ byId('settings').inert=true;
  const r=await fetch('/axproxy-save.cgi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});
- if(!(await r.json()).ok)throw Error('应用失败，请检查节点、网段和端口。');await load();out.textContent='已应用';}
- catch(err){out.textContent=err.message;}finally{submit.disabled=false;}};
+ if(!r.ok||!(await r.json()).ok)throw Error('应用失败，请检查节点、网段和端口。');try{await load();}catch{out.textContent='已保存，状态读取失败，请刷新页面。';return;}out.textContent='已应用';}
+ catch(err){byId('settings').inert=false;out.textContent=err.message;}finally{submit.disabled=false;}};
 load().catch(()=>{byId('result').textContent='无法读取配置，请重新登录管理页。';});
 </script></html>

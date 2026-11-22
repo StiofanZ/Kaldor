@@ -176,6 +176,22 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
         assert command(*client,"curl","--noproxy","*","-fsS","--resolve","allowed.example:80:198.51.100.2","http://allowed.example/")=="198.51.100.1"
         assert command(*client,sys.executable,__file__,"socks-udp")=="udp/198.51.100.1"
         print(p["protocol"],p.get("flow",""),"HTTP, CONNECT, SOCKS5, transparent TCP/UDP, bypass and reject PASS",flush=True)
+    edited = json.loads(control("view"))
+    edited["upstreams"][0].update(previous_name="node", name="renamed")
+    edited.update(default="reject", rules=[{"port": 18480, "outbound": "renamed"}])
+    control("configure", conf("edit.json", edited))
+    assert get(18480, "--noproxy", "", "-x", "http://192.0.2.1:7890") == "198.51.100.1"
+    try:
+        get(18481, "--noproxy", "", "-x", "http://192.0.2.1:7890")
+    except subprocess.CalledProcessError:
+        pass
+    else:
+        raise AssertionError("new default reject was ignored")
+    view = json.loads(control("view"))
+    assert view["default"] == "reject" and not view["upstreams"][0].get("secret")
+    assert "previous_name" not in json.loads((root/"slots/config.json").read_text())["upstreams"][0]
+    control("configure", conf("restore.json", cfg))
+    print("rename with masked credentials, switch default, rule precedence PASS", flush=True)
     before=(root/"slots/config.json").read_bytes()
     try:control("install",engine,"0"*64)
     except subprocess.CalledProcessError:pass
