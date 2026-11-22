@@ -4,7 +4,9 @@ Kaldor 是 RT-AX89X 的独立用户态组件。RT-AX89X 固件提供启动、停
 
 ## 安装与单独升级
 
-首次使用管理页和自动启动需要包含 Kaldor 入口的自编译固件。运行 `command -v kaldorctl` 可确认该入口。已安装旧版固定入口的固件可继续用 `axproxyctl` 执行同一组命令。两版加载器使用相同的 JFFS 配置和 A/B 槽位。管理页 CGI 地址和加载器传给组件的环境变量属于固件接口。未安装组件时代理默认关闭。将发布包通过可信渠道传到路由器，解压到管理员专用暂存目录。通过可信渠道独立核对发布者提供的 SHA-256。以下命令只操作组件文件和自己的网络规则。
+管理页、冷启动和防火墙重建需要含 Kaldor 钩子的固件。可以用 `ls -l /usr/sbin/kaldorctl` 检查固件加载器。此加载器使用 BusyBox 的 flock 和固件的 OpenSSL 校验 SHA-256。旧版 axproxyctl 依赖部分华硕 BusyBox 未提供的 command、mktemp 和 sha256sum，需使用已修复的加载器。组件的 JFFS 配置、A/B 槽位和管理页 CGI 接口可跨加载器复用。
+
+在缺少固件入口的设备上，可将已独立核验摘要的修复加载器保存为 `/jffs/kaldor/kaldorctl`（目录及脚本权限设为 0700），用其绝对路径执行下面的命令。此安装方式提供本次开机的手动启动和停止。下次启动、重建防火墙和管理页集成由固件入口接管。安装包须通过可信渠道获取，并独立核对二进制 SHA-256。
 
 ```sh
 : "${PACKAGE_DIR:?set the unpacked package directory}"

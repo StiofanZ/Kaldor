@@ -8,7 +8,11 @@ mkdir -p "$run"
 exec 9>"$run/lock"
 flock -x 9
 if [ -d "$root" ]; then root=$(cd -P "$root" && pwd); fi
-AXPROXY_CTL=$(command -v "$0")
+case "$0" in
+ /*) AXPROXY_CTL=$0;;
+ */*) AXPROXY_CTL=$PWD/$0;;
+ *) AXPROXY_CTL=$(which "$0") || exit 1;;
+esac
 export root run AXPROXY_CTL
 cfg=$root/config.json
 current=''
@@ -16,7 +20,8 @@ if [ -f "$root/active" ]; then
  read -r slot < "$root/active"
  case "$slot" in a|b) current=$root/$slot;; *) echo 'invalid active slot' >&2; exit 1;; esac
 fi
-manager=$(mktemp "$run/service.XXXXXX")
+# The private run directory is serialized by fd 9, including reaper callbacks.
+manager=$run/service.sh
 trap 'rm -f "$manager"' EXIT
 invoke() {
  bin=$1; export bin; shift
@@ -30,8 +35,8 @@ case "${1:-}" in
    mkdir -p "$root"; chmod 700 "$root"
    candidate=$root/candidate
    cp "$2" "$candidate"
-   actual=$(sha256sum "$candidate")
-   if [ "${actual%% *}" != "$3" ]; then rm -f "$candidate"; echo 'checksum mismatch' >&2; exit 1; fi
+   actual=$(openssl dgst -sha256 < "$candidate")
+   if [ "${actual##* }" != "$3" ]; then rm -f "$candidate"; echo 'checksum mismatch' >&2; exit 1; fi
    chmod 700 "$candidate"
    "$candidate" version
    [ -e "$cfg" ] || echo '{"enabled":false,"default":"direct","devices":[],"upstreams":[],"rules":[]}' > "$cfg"
