@@ -133,9 +133,9 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     for p in peers:
         cfg={"enabled":True,"devices":["192.0.2.2/32"],"upstreams":[dict(name="node",**p)],"default":"node",
              "rules":[{"port":18481,"outbound":"reject"},{"domain_suffix":"blocked.example","outbound":"reject"}]}
-        emulator=os.environ.get("AXPROXY_TEST_QEMU")
+        emulator=os.environ.get("KALDOR_TEST_QEMU")
         if emulator:
-            arm=Path(os.environ["AXPROXY_TEST_ARM"]).resolve()
+            arm=Path(os.environ["KALDOR_TEST_ARM"]).resolve()
             ready=root/"arm-ready"
             target_config=conf("arm.json",dict(cfg,devices=[]))
             target=subprocess.Popen([emulator,str(arm),"serve",str(target_config),"127.0.0.1","lo",str(ready)],env=env)

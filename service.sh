@@ -35,7 +35,7 @@ apply_rules() {
  iface=$(nvram get lan_ifname); lan=$(nvram get lan_ipaddr)
  [ -n "$iface" ] && [ -n "$lan" ] || return 1
  if ip rule show | grep -q "^$pref:" || [ -n "$(ip route show table "$table" 2>/dev/null)" ] || iptables -t mangle -S AXPROXY_LAN >/dev/null 2>&1; then
-  echo 'axproxy routing resources already in use' >&2; return 1
+  echo 'Kaldor routing resources already in use' >&2; return 1
  fi
  touch "$run/firewall" || return 1
  modprobe xt_TPROXY || return 1

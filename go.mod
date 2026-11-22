@@ -1,4 +1,4 @@
-module github.com/StiofanZ/asuswrt/components/axproxy
+module github.com/StiofanZ/asuswrt/components/kaldor
 
 go 1.25.0
 
