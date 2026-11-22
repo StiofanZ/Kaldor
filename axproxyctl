@@ -1,0 +1,59 @@
+#!/bin/sh
+# Firmware ABI: select the component and execute its versioned service manager.
+set -eu
+umask 077
+root=${AXPROXY_HOME:-/jffs/axproxy}
+run=${AXPROXY_RUN:-/tmp/axproxy}
+mkdir -p "$run"
+exec 9>"$run/lock"
+flock -x 9
+if [ -d "$root" ]; then root=$(cd -P "$root" && pwd); fi
+AXPROXY_CTL=$(command -v "$0")
+export root run AXPROXY_CTL
+cfg=$root/config.json
+current=''
+if [ -f "$root/active" ]; then
+ read -r slot < "$root/active"
+ case "$slot" in a|b) current=$root/$slot;; *) echo 'invalid active slot' >&2; exit 1;; esac
+fi
+manager=$(mktemp "$run/service.XXXXXX")
+trap 'rm -f "$manager"' EXIT
+invoke() {
+ bin=$1; export bin; shift
+ "$bin" manager > "$manager" && sh "$manager" "$@"
+}
+case "${1:-}" in
+ install|rollback)
+  case "$current" in "$root/a") next=b;; *) next=a;; esac
+  if [ "$1" = install ]; then
+   [ "$#" = 3 ] || { echo 'install BINARY TRUSTED_SHA256' >&2; exit 2; }
+   mkdir -p "$root"; chmod 700 "$root"
+   candidate=$root/candidate
+   cp "$2" "$candidate"
+   actual=$(sha256sum "$candidate")
+   if [ "${actual%% *}" != "$3" ]; then rm -f "$candidate"; echo 'checksum mismatch' >&2; exit 1; fi
+   chmod 700 "$candidate"
+   "$candidate" version
+   [ -e "$cfg" ] || echo '{"enabled":false,"default":"direct","devices":[],"upstreams":[],"rules":[]}' > "$cfg"
+  else
+   [ -n "$current" ] || exit 1
+   candidate=$root/$next
+  fi
+  "$candidate" check "$cfg"
+  "$candidate" manager > "$manager" && [ -s "$manager" ] && sh -n "$manager" || exit 1
+  echo "$next" > "$root/active.new"
+  if [ -n "$current" ]; then invoke "$current" stop; fi
+  if invoke "$candidate" start; then
+   if [ "$candidate" = "$root/$next" ] || mv "$candidate" "$root/$next"; then
+    candidate=$root/$next
+    if mv "$root/active.new" "$root/active"; then exit 0; fi
+   fi
+  fi
+  if ! invoke "$candidate" stop; then echo "candidate cleanup failed" >&2; fi
+  if [ -n "$current" ]; then invoke "$current" start; fi
+  exit 1;;
+ start|stop|reaped|firewall|status|page|view|configure)
+  if [ -n "$current" ]; then invoke "$current" "$@"; exit; fi
+  case "$1" in status) echo uninstalled;; page) echo '尚未安装网络代理组件。';; view) echo '{}';; configure) exit 1;; esac;;
+ *) echo 'install | rollback | configure | start | stop | firewall | view | status' >&2; exit 2;;
+esac

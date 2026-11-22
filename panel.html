@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>网络代理</title>
+<style>
+*{box-sizing:border-box}body{font:14px/1.55 Arial,sans-serif;color:#f0f2f3;background:#4d595d;margin:0;padding:18px}
+h1{font-size:21px;margin:0}h2{font-size:16px;margin:22px 0 6px}p{margin:6px 0;color:#e2e8eb}
+header,.actions,.entry{display:flex;align-items:center;justify-content:space-between;gap:8px}
+fieldset{border:1px solid #79868b;margin:8px 0;padding:10px}label{display:inline-flex;flex-direction:column;margin:4px 8px 4px 0}
+input,select,textarea{border:1px solid #89979e;border-radius:2px;background:#273237;color:white;padding:6px;font:inherit}
+input[type=checkbox]{width:auto}.toggle{display:inline-block}textarea{width:100%;height:55px}button{background:#30464f;color:white;border:1px solid #91a0a5;border-radius:3px;padding:5px 12px;cursor:pointer}
+button[type=submit]{background:#106481}.status{color:#c5efff}.actions{justify-content:flex-start;margin-top:16px}small{color:#d4dde1}#result{white-space:pre-wrap}
+</style>
+<header><h1>网络代理</h1><output class="status" id="status"></output></header>
+<form id="settings"><fieldset><label class="toggle"><input id="enabled" type="checkbox"> 启用代理</label>
+<p>局域网 HTTP 端口 7890，SOCKS5 端口 7891。</p>
+<label for="devices">透明代理设备</label><textarea id="devices" placeholder="每行一个源 IPv4 网段，单台设备用 /32"></textarea>
+<small>留空时只开放手动入口。透明接管覆盖所选设备的公网 IPv4 TCP 和 UDP。</small></fieldset>
+<h2>上游节点</h2><div id="nodes"></div><button type="button" id="newNode">添加节点</button>
+<h2>分流规则</h2><p>从上到下匹配，每条规则中的条件须同时满足。</p><div id="rules"></div><button type="button" id="newRule">添加规则</button>
+<label>默认出口<select id="fallback"></select></label>
+<div class="actions"><button type="submit">保存并应用</button><output role="status" id="result"></output></div></form>
+<script>
+'use strict';
+const byId=id=>document.getElementById(id);
+function button(txt,fn){const b=document.createElement('button');b.type='button';b.textContent=txt;b.onclick=fn;return b;}
+function choices(sel,values,current){sel.textContent='';for(const value of values){const o=document.createElement('option');o.value=value;o.textContent=value;sel.append(o);}sel.value=current;}
+function field(box,key,title,value,opts){
+ const l=document.createElement('label');l.textContent=title;const e=document.createElement(Array.isArray(opts)?'select':'input');e.dataset.key=key;
+ if(Array.isArray(opts))choices(e,opts,value||opts[0]);else {e.type=opts||'text';e.value=value||'';}
+ l.append(e);box.append(l);return e;
+}
+function names(){return ['direct','reject',...Array.from(byId('nodes').querySelectorAll('[data-key=name]'),e=>e.value.trim()).filter(Boolean)];}
+function refresh(){for(const s of [byId('fallback'),...byId('rules').querySelectorAll('[data-key=outbound]')]){const v=s.value;choices(s,names(),names().includes(v)?v:'direct');}}
+function entry(parent,title){const box=document.createElement('fieldset'),head=document.createElement('div');head.className='entry';const label=document.createElement('strong');label.textContent=title;head.append(label,button('删除',()=>{box.remove();refresh();}));box.append(head);parent.append(box);return box;}
+function node(data={}){
+ const box=entry(byId('nodes'),'节点');const name=field(box,'name','名称',data.name);name.onchange=refresh;
+ const proto=field(box,'protocol','协议',data.protocol,['anytls','socks5','vless-reality']);
+ field(box,'server','服务器和端口',data.server).placeholder='proxy.example:443';
+ const user=field(box,'username','用户名',data.username),secret=field(box,'secret','密码或 UUID','','password');secret.autocomplete='new-password';if(data.name)secret.placeholder='留空保留原凭据';
+ const sni=field(box,'server_name','TLS 服务器名',data.server_name),key=field(box,'public_key','REALITY 公钥',data.public_key),sid=field(box,'short_id','Short ID',data.short_id);
+ const flow=field(box,'flow','VLESS flow',data.flow,['','xtls-rprx-vision']);
+ function visible(el,on){el.disabled=!on;el.parentNode.style.display=on?'':'none';}
+ function update(){visible(user,proto.value==='socks5');visible(sni,proto.value!=='socks5');for(const e of [key,sid,flow])visible(e,proto.value==='vless-reality');}
+ proto.onchange=update;update();refresh();
+}
+function rule(data={}){
+ const box=entry(byId('rules'),'匹配条件');field(box,'source','源 CIDR',data.source);field(box,'destination','目的 CIDR',data.destination);
+ field(box,'domain_suffix','域名后缀',data.domain_suffix);field(box,'port','目的端口',data.port,'number');
+ field(box,'outbound','出口',data.outbound,names());
+ box.append(button('上移',()=>{if(box.previousElementSibling)box.parentNode.insertBefore(box,box.previousElementSibling);}));
+}
+function rows(id){return Array.from(byId(id).children,box=>{const obj={};for(const e of box.querySelectorAll('[data-key]')){if(e.disabled)continue;const k=e.dataset.key;const v=k==='secret'?e.value:e.value.trim();if(v)obj[k]=k==='port'?Number(v):v;}return obj;});}
+async function load(){
+ const [r,s]=await Promise.all([fetch('/axproxy-state.cgi',{cache:'no-store'}),fetch('/axproxy-status.cgi',{cache:'no-store'})]);
+ const c=await r.json();const status=(await s.text()).trim();byId('status').textContent='vCOMPONENT_VERSION · '+({running:'运行中',degraded:'透明路由异常',stopped:'已停止',uninstalled:'未安装'}[status]||'状态未知');
+ byId('enabled').checked=c.enabled;byId('devices').value=(c.devices||[]).join('\n');
+ byId('rules').textContent='';byId('nodes').textContent='';(c.upstreams||[]).forEach(node);(c.rules||[]).forEach(rule);refresh();byId('fallback').value=c.default||'direct';
+}
+byId('newNode').onclick=()=>node();byId('newRule').onclick=()=>rule();
+byId('settings').onsubmit=async e=>{e.preventDefault();const submit=e.submitter||document.querySelector('button[type=submit]');submit.disabled=true;const out=byId('result');out.textContent='正在应用…';
+ try{const config={enabled:byId('enabled').checked,devices:byId('devices').value.trim().split(/\s+/).filter(Boolean),upstreams:rows('nodes'),rules:rows('rules'),default:byId('fallback').value};
+ const r=await fetch('/axproxy-save.cgi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});
+ if(!(await r.json()).ok)throw Error('应用失败，请检查节点、网段和端口。');await load();out.textContent='已应用';}
+ catch(err){out.textContent=err.message;}finally{submit.disabled=false;}};
+load().catch(()=>{byId('result').textContent='无法读取配置，请重新登录管理页。';});
+</script></html>
