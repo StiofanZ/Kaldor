@@ -15,7 +15,20 @@ kaldorctl install "$PACKAGE_DIR/kaldor" "$KALDOR_SHA256"
 kaldorctl status
 ```
 
-每个版本使用同一个 install 命令。安装器在 JFFS 私有目录暂存并校验新程序，检查现有配置，启用状态下等待入口监听和透明规则就绪后切换活动槽。升级中已有代理连接会断开。进程启动或规则安装失败时重新启动原活动槽。通过 `kaldorctl rollback` 切回上一个可用槽；配置由两个槽共用。回退时同样检查兼容性。管理员可在管理页关闭服务并持久保存。正常升级不访问 MTD。当前发布使用管理员取得的可信摘要，不提供自动联网更新。
+每个版本使用同一个 install 命令。安装器在 JFFS 私有目录暂存并校验新程序，检查现有配置，启用状态下等待入口监听和透明规则就绪后切换活动槽。升级中已有代理连接会断开。进程启动或规则安装失败时重新启动原活动槽。通过 `kaldorctl rollback` 切回上一个可用槽；配置由两个槽共用。回退时同样检查兼容性。管理员可在管理页关闭服务并持久保存。正常升级不访问 MTD。
+
+### 从 GitHub Release 升级
+
+在 [稳定版 Release](https://github.com/StiofanZ/Kaldor/releases/latest) 取得 `kaldor-update`。首次安装升级工具时，在管理电脑核对附件的 GitHub SHA-256 摘要，通过 SSH 放入路由器的 `/jffs/kaldor/kaldor-update` 并设为 0700。以后在路由器上执行：
+
+```sh
+/jffs/kaldor/kaldor-update check
+/jffs/kaldor/kaldor-update upgrade
+```
+
+`check` 显示当前版本、最新稳定版及是否可升级。`upgrade` 仅安装更高版本。更新器经系统 CA 验证 HTTPS，从最新 Release 读取版本及摘要，按固定版本下载 ARMv7 程序，核对 SHA-256 和程序自报版本后交给固件加载器。下载或校验失败时，现有代理继续运行。升级成功会短暂重新建立代理连接。若需恢复上个版本，使用 `kaldorctl rollback`。设备按管理员指令检查和升级，无需 GitHub 令牌。
+
+发布维护者完成本地验收后，将与 Cargo 版本一致的稳定标签（如 `v0.3.1`）推送到仓库。GitHub Actions 使用固定的 Rust、Zig 工具链生成 ARMv7 程序、安装包、离线源码包、更新器、版本清单和 `SHA256SUMS`，校验构建产物后发布 Release。测试在本地执行。
 
 启动时，组件先读取主 LAN 地址和接口，再创建工作进程。在工作进程写入就绪标记并完成分流规则安装后，启动命令才返回成功。进程启动和就绪的开机时间、端口绑定失败及就绪超时记录在 `/tmp/axproxy/service.log`，启动命令的返回值同时写入系统日志。
 

@@ -1,0 +1,61 @@
+#!/bin/sh
+# Fetch stable Kaldor releases on the router using its system CA store.
+set -eu
+umask 077
+fail() { echo "kaldor-update: $*" >&2; exit 1; }
+case "${1:-}" in check|upgrade) action=$1;; *) fail 'usage: kaldor-update check|upgrade';; esac
+[ "$#" = 1 ] || fail 'unexpected arguments'
+base=https://github.com/StiofanZ/Kaldor/releases
+root=${AXPROXY_HOME:-/jffs/axproxy}
+ctl=${AXPROXY_CTL:-/usr/sbin/kaldorctl}
+[ -x "$ctl" ] || fail 'component loader missing'
+tmp=/tmp/kaldor-release.$$
+mkdir "$tmp" || fail 'cannot create private staging directory'
+trap 'rm -rf "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+fetch() {
+ curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+  --connect-timeout 15 --max-time 180 --retry 2 --max-filesize "$3" --output "$2" "$1"
+}
+installed() {
+ if [ ! -e "$root/active" ]; then echo uninstalled; return; fi
+ read -r slot < "$root/active"
+ case "$slot" in a|b) "$root/$slot" version;; *) fail 'invalid active slot';; esac
+}
+# Compare stable numeric triples, including components longer than an awk number.
+compare() {
+ awk -v old="$1" -v new="$2" 'BEGIN {
+   v="^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$"
+   if (new !~ v || (old != "uninstalled" && old !~ v)) exit 1
+   if (old == "uninstalled") { print "upgrade"; exit }
+   split(old,a,"[.]"); split(new,b,"[.]")
+   for(i=1;i<=3;i++) {
+     if (length(a[i]) != length(b[i])) { print (length(a[i]) < length(b[i]) ? "upgrade" : "newer"); exit }
+     if ("x" a[i] != "x" b[i]) { print ("x" a[i] < "x" b[i] ? "upgrade" : "newer"); exit }
+   }
+   print "current"
+ }'
+}
+fetch "$base/latest/download/rt-ax89x.manifest" "$tmp/manifest" 1024
+awk 'NR!=1 || NF!=2 || length($2)!=64 || $2 ~ /[^0-9a-f]/ {bad=1} END{exit bad || NR!=1}' "$tmp/manifest" || fail 'invalid release manifest'
+read -r release digest < "$tmp/manifest"
+current=$(installed)
+decision=$(compare "$current" "$release") || fail 'invalid stable version'
+echo "installed=$current release=$release decision=$decision"
+[ "$action" = upgrade ] && [ "$decision" = upgrade ] || exit 0
+fetch "$base/download/v$release/kaldor" "$tmp/kaldor" 16777216
+actual=$(openssl dgst -sha256 < "$tmp/kaldor")
+[ "${actual##* }" = "$digest" ] || fail 'release digest mismatch'
+chmod 700 "$tmp/kaldor"
+[ "$("$tmp/kaldor" version)" = "$release" ] || fail 'binary version does not match manifest'
+# Serialize concurrent release upgrades and recheck after the download.
+run=${AXPROXY_RUN:-/tmp/axproxy}
+mkdir -p "$run"
+exec 8>"$run/release.lock"
+flock -x 8
+current=$(installed)
+decision=$(compare "$current" "$release") || fail 'invalid installed version'
+if [ "$decision" != upgrade ]; then echo "installed=$current decision=$decision"; exit 0; fi
+"$ctl" install "$tmp/kaldor" "$digest" 8>&-
+[ "$(installed)" = "$release" ] || fail 'active version mismatch'
+"$ctl" status 8>&-

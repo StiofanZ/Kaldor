@@ -19,7 +19,7 @@ if [ "$action" = build ]; then
 fi
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
-cp -R src build third_party test panel.html service.sh kaldorctl Cargo.toml Cargo.lock Makefile package.sh README.md LICENSE "$stage/"
+cp -R src build third_party test panel.html service.sh kaldorctl kaldor-update Cargo.toml Cargo.lock Makefile package.sh README.md LICENSE "$stage/"
 mkdir -p "$stage/.cargo"
 if [ -d vendor ]; then
  cp -R vendor "$stage/"
@@ -34,7 +34,11 @@ directory = "vendor"
 CONFIG
 (cd "$stage" && CARGO_NET_OFFLINE=true python3 build/cross.py armv7 build --locked --release)
 cp "$CARGO_TARGET_DIR/$target/release/kaldor" "$out/kaldor"
-cp kaldorctl "$out/kaldorctl"
-tar -czf "$out/$name-linux-armv7.tar.gz" -C "$out" kaldor kaldorctl -C "$stage" README.md LICENSE
+cp kaldorctl kaldor-update "$out/"
+tar -czf "$out/$name-linux-armv7.tar.gz" -C "$out" kaldor kaldorctl kaldor-update -C "$stage" README.md LICENSE
 tar -czf "$out/$name-source.tar.gz" -C "$stage" .
-(cd "$out" && sha256sum kaldor "$name-linux-armv7.tar.gz" "$name-source.tar.gz" > SHA256SUMS)
+(cd "$out"
+ binary_hash=$(sha256sum kaldor)
+ printf '%s %s\n' "$version" "${binary_hash%% *}" > rt-ax89x.manifest
+ sha256sum kaldor kaldor-update rt-ax89x.manifest "$name-linux-armv7.tar.gz" "$name-source.tar.gz" > SHA256SUMS
+)
