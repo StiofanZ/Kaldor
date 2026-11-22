@@ -118,12 +118,7 @@ async fn accept(listener: TcpListener, s: Service, port: u16) -> Result<()> {
                         dest != SocketAddr::from((s.lan, 7893)),
                         "direct connection to transparent listener"
                     );
-                    let (data, domain) = if s
-                        .engine
-                        .cfg
-                        .rules
-                        .iter()
-                        .any(|r| !r.domain_suffix.is_empty())
+                    let (data, domain) = if s.engine.cfg.rules.iter().any(|r| r.needs_tcp_domain())
                     {
                         sniff::read(&mut c, dest.port()).await?
                     } else {

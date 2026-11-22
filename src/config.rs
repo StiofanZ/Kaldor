@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use ipnet::IpNet;
+use meow_common::Network;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashSet, fs::File, io::Read, net::IpAddr};
 
@@ -27,9 +28,33 @@ pub struct Rule {
     #[serde(skip_serializing_if = "Option::is_none")]
     destination: Option<IpNet>,
     #[serde(skip_serializing_if = "String::is_empty")]
-    pub domain_suffix: String,
+    domain_suffix: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    network: Option<Network>,
     port: u16,
     outbound: String,
+}
+impl Rule {
+    pub fn needs_tcp_domain(&self) -> bool {
+        !self.domain_suffix.is_empty() && self.network != Some(Network::Udp)
+    }
+    fn matches_domain(&self, domain: &str) -> bool {
+        if self.domain_suffix.is_empty() {
+            return true;
+        }
+        let suffix = self
+            .domain_suffix
+            .strip_suffix('.')
+            .unwrap_or(&self.domain_suffix);
+        let Some(start) = domain.len().checked_sub(suffix.len()) else {
+            return false;
+        };
+        !suffix.is_empty()
+            && (start == 0 || domain.as_bytes()[start - 1] == b'.')
+            && domain
+                .get(start..)
+                .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
+    }
 }
 #[derive(Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -88,7 +113,18 @@ impl Config {
             names.contains(self.default.as_str()),
             "unknown default outbound"
         );
-        for rule in &self.rules {
+        for (index, rule) in self.rules.iter().enumerate() {
+            if !rule.domain_suffix.is_empty() {
+                let suffix = rule
+                    .domain_suffix
+                    .strip_suffix('.')
+                    .unwrap_or(&rule.domain_suffix);
+                ensure!(
+                    suffix.split('.').all(|label| !label.is_empty()),
+                    "rule {}: empty domain label",
+                    index + 1
+                );
+            }
             ensure!(
                 names.contains(rule.outbound.as_str()),
                 "unknown rule outbound"
@@ -96,6 +132,7 @@ impl Config {
             ensure!(
                 rule.source.is_some()
                     || rule.destination.is_some()
+                    || rule.network.is_some()
                     || rule.port != 0
                     || !rule.domain_suffix.is_empty(),
                 "empty rule"
@@ -103,21 +140,29 @@ impl Config {
         }
         Ok(())
     }
-    pub fn route(&self, src: IpAddr, dst: Option<IpAddr>, port: u16, domain: &str) -> &str {
-        let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+    pub fn route(
+        &self,
+        src: IpAddr,
+        dst: Option<IpAddr>,
+        port: u16,
+        domain: &str,
+        network: Network,
+    ) -> &str {
+        let domain = domain.strip_suffix('.').unwrap_or(domain);
+        let domain = if domain.parse::<IpAddr>().is_ok() {
+            ""
+        } else {
+            domain
+        };
         self.rules
             .iter()
             .find(|r| {
-                let suffix = r.domain_suffix.trim_end_matches('.').to_ascii_lowercase();
-                r.source.is_none_or(|p| p.contains(&src))
+                r.network.is_none_or(|n| n == network)
+                    && r.source.is_none_or(|p| p.contains(&src))
                     && r.destination
                         .is_none_or(|p| dst.is_some_and(|ip| p.contains(&ip)))
                     && (r.port == 0 || r.port == port)
-                    && (suffix.is_empty()
-                        || domain == suffix
-                        || domain
-                            .strip_suffix(&suffix)
-                            .is_some_and(|s| s.ends_with('.')))
+                    && r.matches_domain(domain)
             })
             .map_or(&self.default, |r| &r.outbound)
     }
@@ -232,9 +277,97 @@ mod tests {
             ("192.0.2.8", "www.example.test", "direct"),
             ("192.0.2.7", "notexample.test", "direct"),
         ] {
-            assert_eq!(cfg.route(ip.parse().unwrap(), None, 443, host), want);
+            assert_eq!(
+                cfg.route(ip.parse().unwrap(), None, 443, host, Network::Tcp),
+                want
+            );
         }
     }
+    #[test]
+    fn transport_combines_with_device_and_preserves_first_match() {
+        let cfg: Config = serde_json::from_str(r#"{
+            "default":"reject","rules":[
+              {"network":"udp","source":"192.0.2.2/32","destination":"198.51.100.0/24","port":443,"outbound":"direct"},
+              {"network":"udp","outbound":"reject"},
+              {"port":443,"outbound":"direct"}
+            ]}"#).unwrap();
+        cfg.validate().unwrap();
+        for (src, dst, port, network, want) in [
+            (
+                "192.0.2.2",
+                Some("198.51.100.1"),
+                443,
+                Network::Udp,
+                "direct",
+            ),
+            ("192.0.2.2", None, 443, Network::Udp, "reject"),
+            (
+                "192.0.2.2",
+                Some("203.0.113.1"),
+                443,
+                Network::Udp,
+                "reject",
+            ),
+            (
+                "192.0.2.3",
+                Some("198.51.100.1"),
+                443,
+                Network::Udp,
+                "reject",
+            ),
+            (
+                "192.0.2.2",
+                Some("198.51.100.1"),
+                53,
+                Network::Udp,
+                "reject",
+            ),
+            ("192.0.2.3", None, 443, Network::Tcp, "direct"),
+            ("192.0.2.3", None, 53, Network::Tcp, "reject"),
+        ] {
+            assert_eq!(
+                cfg.route(
+                    src.parse().unwrap(),
+                    dst.map(|ip| ip.parse().unwrap()),
+                    port,
+                    "",
+                    network
+                ),
+                want
+            );
+        }
+        let view = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(view["rules"][0]["network"], "udp");
+        assert!(view["rules"][2].get("network").is_none());
+    }
+
+    #[test]
+    fn domains_require_nonempty_labels_and_a_hostname() {
+        let mut cfg = Config {
+            default: "direct".into(),
+            rules: vec![Rule {
+                outbound: "reject".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        for suffix in [".", "...", ".example", "example..org", "example.org.."] {
+            cfg.rules[0].domain_suffix = suffix.into();
+            assert!(cfg.validate().is_err(), "{suffix}");
+        }
+        let src = "192.0.2.2".parse().unwrap();
+        for (suffix, host, want) in [
+            ("2", "192.0.2.2", "direct"),
+            ("EXAMPLE.org.", "example.ORG", "reject"),
+            ("example.org.", "x.Example.org.", "reject"),
+            ("example.org.", "", "direct"),
+        ] {
+            cfg.rules[0].domain_suffix = suffix.into();
+            cfg.validate().unwrap();
+            assert_eq!(cfg.route(src, None, 443, host, Network::Tcp), want);
+        }
+    }
+
     #[test]
     fn renames_keep_credentials_bound_to_the_original_peer() {
         fn node(name: &str, server: &str) -> Upstream {
@@ -284,7 +417,12 @@ mod tests {
 
     #[test]
     fn configuration_contract() {
-        for s in [r#"{"unknown":1}"#, "{}{}", r#"{"devices":["invalid"]}"#] {
+        for s in [
+            r#"{"unknown":1}"#,
+            "{}{}",
+            r#"{"devices":["invalid"]}"#,
+            r#"{"rules":[{"network":"quic"}]}"#,
+        ] {
             assert!(serde_json::from_str::<Config>(s).is_err());
         }
         for s in [

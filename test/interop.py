@@ -41,7 +41,7 @@ def origin():
         def log_message(self, *args):
             pass
 
-    for port in [80,18480,18481]:
+    for port in [80,18480,18481,18482]:
         server = Server(("198.51.100.2", port), Echo)
         threading.Thread(target=server.serve_forever, daemon=True).start()
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -192,6 +192,42 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     assert "previous_name" not in json.loads((root/"slots/config.json").read_text())["upstreams"][0]
     control("configure", conf("restore.json", cfg))
     print("rename with masked credentials, switch default, rule precedence PASS", flush=True)
+    # Same device, address and port: only the transport distinguishes these flows.
+    def tcp_split(*flags):
+        return get(18482, "--noproxy", "*", *flags)
+    def udp_split():
+        return command(*client, sys.executable, "-c",
+            "import socket;s=socket.socket(2,2);s.settimeout(5);s.sendto(b'udp',('198.51.100.2',18482));print(s.recv(64).decode())")
+    assert tcp_split() == "198.51.100.1"
+    rules = [{"source":"192.0.2.2/32", "port":18482, "network":"tcp", "outbound":"reject"},
+             {"port":18482, "network":"udp", "outbound":"node"}]
+    control("configure", conf("split.json", dict(cfg, rules=rules, default="direct")))
+    for flags in [("--noproxy", "*"), ("--noproxy", "", "-x", "http://192.0.2.1:7890"),
+                  ("--noproxy", "", "-x", "socks5h://192.0.2.1:7891")]:
+        try:
+            get(18482, *flags)
+        except subprocess.CalledProcessError:
+            pass
+        else:
+            raise AssertionError(("TCP rule ignored", flags))
+    assert get(18482, "--interface", "192.0.2.3", "--noproxy", "", "-x", "http://192.0.2.1:7890") == "198.51.100.1"
+    assert tcp_split("--interface", "192.0.2.3") == "192.0.2.3"
+    assert udp_split() == "udp/198.51.100.1"
+    assert command(*client, sys.executable, __file__, "socks-udp") == "udp/198.51.100.1"
+    # A failing default proves UDP reached the named node through its rule.
+    control("configure", conf("split.json", dict(cfg, rules=rules, default="reject")))
+    assert udp_split() == "udp/198.51.100.1"
+    invalid = dict(cfg, rules=[{"domain_suffix":".", "outbound":"reject"}])
+    try:
+        control("configure", conf("invalid.json", invalid))
+    except subprocess.CalledProcessError:
+        pass
+    else:
+        raise AssertionError("empty domain label accepted")
+    assert json.loads(control("view"))["rules"] == rules
+    assert udp_split() == "udp/198.51.100.1"
+    control("configure", conf("restore.json", cfg))
+    print("same-port TCP/UDP, per-device selection, invalid edit preserves routing PASS", flush=True)
     before=(root/"slots/config.json").read_bytes()
     try:control("install",engine,"0"*64)
     except subprocess.CalledProcessError:pass

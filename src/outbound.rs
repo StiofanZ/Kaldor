@@ -156,7 +156,7 @@ impl Engine {
         ensure!(t.port > 0, "invalid port");
         let a = self
             .nodes
-            .get(self.cfg.route(src, t.addr(), t.port, domain))
+            .get(self.cfg.route(src, t.addr(), t.port, domain, network))
             .ok_or_else(|| anyhow::anyhow!("rejected by rule"))?;
         let mut meta = Metadata {
             src_ip: Some(src),

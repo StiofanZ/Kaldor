@@ -87,9 +87,13 @@ function node(data={}){
 }
 function rule(data={}){
  const box=entry(byId('rules'),'匹配条件');field(box,'source','源 CIDR',data.source);field(box,'destination','目的 CIDR',data.destination);
- field(box,'domain_suffix','域名后缀',data.domain_suffix);field(box,'port','目的端口',data.port,'number');
+ const network=field(box,'network','传输协议','',[]);
+ network.replaceChildren(new Option('TCP 和 UDP',''),new Option('TCP','tcp'),new Option('UDP','udp'));network.value=data.network||'';
+ const suffix=field(box,'domain_suffix','域名后缀',data.domain_suffix);suffix.pattern='([^.]+\\.)*[^.]+\\.?';suffix.title='填写域名或其后缀，例如 example.org';
+ const port=field(box,'port','目的端口',data.port,'number');port.min=1;port.max=65535;
  const select=field(box,'outbound','出口','',[]);populate(select,targetId(data.outbound||'direct'));
  box.append(button('上移',()=>{if(box.previousElementSibling)box.parentNode.insertBefore(box,box.previousElementSibling);}));
+ box.append(button('下移',()=>{if(box.nextElementSibling)box.nextElementSibling.after(box);}));
 }
 function rows(id){
  return Array.from(byId(id).children,box=>{

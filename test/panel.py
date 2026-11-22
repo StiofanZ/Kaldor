@@ -8,7 +8,7 @@ panel = (Path(__file__).resolve().parents[1] / "panel.html").read_text()
 mock = """<script>
 let saved;
 let config={default:'east',devices:[],upstreams:['east','west'].map(name=>({
- name,protocol:'anytls',server:name+'.test:443'})),rules:[{port:443,outbound:'east'}]};
+ name,protocol:'anytls',server:name+'.test:443'})),rules:[{port:443,outbound:'east'},{network:'udp',outbound:'reject'}]};
 window.fetch=async (url,opts)=>{
  if(url.endsWith('save.cgi')){saved=JSON.parse(opts.body);return new Response('{"ok":true}');}
  if(url.endsWith('status.cgi'))return new Response('running');
@@ -36,9 +36,18 @@ addEventListener('load',async ()=>{
   assert(!saved && fallback.value===west.id && rule.value===east.id,'staging the switch');
   click(east,'删除');click(west,'删除');
   assert(east.isConnected&&west.isConnected,'deleted referenced node');
+  const [first,second]=document.querySelectorAll('#rules fieldset');
+  const protocol=row=>row.querySelector('[data-key=network]');
+  assert(protocol(first).value==='' && protocol(second).value==='udp','load rule transport');
+  click(first,'下移');assert(first.previousElementSibling===second,'move down');
+  click(first,'上移');assert(first.nextElementSibling===second,'move up');
+  const suffix=first.querySelector('[data-key=domain_suffix]');
+  suffix.value='.';assert(!suffix.checkValidity(),'invalid suffix accepted');
+  suffix.value='example.org.';assert(suffix.checkValidity(),'absolute domain rejected');
+  protocol(second).value='tcp';click(second,'上移');
   document.querySelector('#settings').requestSubmit();
   await new Promise(resolve=>setTimeout(resolve,10));
-  assert(saved.default==='west' && saved.rules[0].outbound==='renamed','wrong saved routing');
+  assert(saved.default==='west' && saved.rules[1].outbound==='renamed' && !('network' in saved.rules[1]) && saved.rules[0].network==='tcp' && saved.rules[0].outbound==='reject','wrong saved routing');
   assert(saved.upstreams[0].previous_name==='east' && !saved.upstreams[0].secret,'credential edit');
   result.textContent='PANEL_PASS';
  } catch(err){result.textContent='PANEL_FAIL '+err;}
@@ -56,4 +65,4 @@ with tempfile.TemporaryDirectory() as directory:
     ], text=True, timeout=45)
     if "<pre>PANEL_PASS</pre>" not in output:
         sys.exit(output.rsplit("<pre>", 1)[-1][:240])
-    print("Management page rename, reference protection and default switching PASS")
+    print("Management page rename, reference protection and default switching, transport and rule ordering PASS")
