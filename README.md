@@ -33,16 +33,24 @@ kaldorctl status
 
 ## 本地构建和验收
 
-本版用 Go 1.27.4 构建。构建需要 Go、make、tar 和 sha256sum；在本目录运行。源码包带有 vendor 目录。解压后使用相同版本的 Go，在断网环境中执行 `GOPROXY=off make build` 即可重建同一 ARMv7 程序。
+Kaldor 0.2.0 的主程序、分流、网络入口和上游适配使用 Rust。数据转发在同一进程内完成。AnyTLS 会话、SOCKS5、VLESS/Vision 和 TLS 使用协议库。REALITY 的 X25519MLKEM768 密钥交换使用 BoringSSL。管理脚本和华硕管理页面板嵌入可执行文件。
+
+构建环境使用 Rust 1.91.1、Zig 0.14.1、Python 3、CMake、libclang、make、tar 和 sha256sum。先安装 Rust 标准库目标。若 Zig 不在 PATH，可用环境变量 `ZIG` 指定。发布包和校验清单写入 `dist/`，可用 `DIST` 指定其他目录。
 
 ```sh
+rustup target add armv7-unknown-linux-musleabihf
 make package
 ```
 
-对照测试在原生 Linux 的独立网络命名空间内运行，依赖 iproute2、iptables、curl、OpenSSL、Python 3、flock、xt_TPROXY 和同架构的 sing-box、Xray 测试服务端。测试在临时目录生成凭据，测试客户端和目的端分别使用隔离网络。生产运行只需要 Kaldor。
+源码包包含 Cargo.lock 和依赖源码。解包后在同一工具链环境运行 `CARGO_NET_OFFLINE=true make build` 可离线生成 ARMv7 二进制。
+
+互通测试在 Linux 的独立网络命名空间中运行。需要 iproute2、iptables、curl、OpenSSL、Python 3、flock、xt_TPROXY，以及同架构的 sing-box 和 Xray 测试服务端。以下示例使用 ARM64 Linux。最后一个参数是先前发布的、能够在该测试机运行的组件版本，用于检查双槽升级与回退。
 
 ```sh
-CGO_ENABLED=0 go build -ldflags="-X main.version=$(cat VERSION)" -o dist/kaldor-native .
-CGO_ENABLED=0 go build -ldflags="-X main.version=upgrade-test" -o dist/kaldor-upgrade .
-sudo unshare -n python3 test/interop.py dist/kaldor-native ./kaldorctl "$SING_BOX" "$XRAY" dist/kaldor-upgrade
+cargo test --locked
+rustup target add aarch64-unknown-linux-musl
+python3 build/cross.py aarch64 build --locked --release
+sudo unshare -n python3 test/interop.py target/aarch64-unknown-linux-musl/release/kaldor ./kaldorctl "$SING_BOX" "$XRAY" "$PREVIOUS_COMPONENT"
 ```
+
+设置 `KALDOR_TEST_HYBRID=1` 可让测试 TLS 目标仅接受 X25519MLKEM768。设置 `KALDOR_TEST_ARM` 和 `KALDOR_TEST_QEMU` 可额外运行 ARMv7 发布程序的手动代理入口。透明转发由原生 Linux 内核验证。

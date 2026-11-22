@@ -1,0 +1,1 @@
+Based on meow-transport 0.29.0 at meow-rs/meow-rs commit de176935fedf00c98c6580109cd0034bf67801a8. The REALITY transport uses BoringSSL ML-KEM-768 for the X25519MLKEM768 TLS key share. The Cargo manifest enables the corresponding BoringSSL API.

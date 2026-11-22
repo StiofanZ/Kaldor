@@ -101,13 +101,22 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
          "tls":{"enabled":True,"certificate_path":str(root/"ca.pem"),"key_path":str(root/"key")}},
         {"type":"socks","tag":"socks","listen":"127.0.0.1","listen_port":19080}],
         "outbounds":[{"type":"direct","tag":"direct"}]}
+    hybrid_target = os.environ.get("KALDOR_TEST_HYBRID") == "1"
+    if hybrid_target:
+        # Require real ML-KEM decapsulation on the client when Xray relays this ServerHello.
+        import copy
+        tls_target = copy.deepcopy(sing_conf["inbounds"][0])
+        tls_target.update(tag="tls-target", listen_port=19445)
+        tls_target["tls"].update(curve_preferences=["X25519MLKEM768"], alpn=["h2","http/1.1"])
+        sing_conf["inbounds"].append(tls_target)
     def conf(name, value):
         p=root/name
         p.write_text(json.dumps(value));p.chmod(0o600)
         return p
     spawn(sing,"run","-c",str(conf("sing.json",sing_conf)))
     wait(lambda: ":19443" in command("ss","-ltn"))
-    spawn("openssl","s_server","-accept","127.0.0.1:19445","-cert",str(root/"ca.pem"),"-key",str(root/"key"),"-tls1_3","-alpn","h2,http/1.1","-groups","X25519","-num_tickets","1","-ign_eof","-www")
+    if not hybrid_target:
+        spawn("openssl","s_server","-accept","127.0.0.1:19445","-cert",str(root/"ca.pem"),"-key",str(root/"key"),"-tls1_3","-alpn","h2,http/1.1","-groups","X25519","-num_tickets","1","-ign_eof","-www")
     wait(lambda: ":19445" in command("ss","-ltn"))
     keys=[v.split(":",1)[1].strip() for v in command(xray,"x25519").splitlines()]
     user=str(uuid.uuid4())
@@ -182,9 +191,19 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     assert command(upgrade,"version")!=command(engine,"version")
     control("install",upgrade,hashlib.sha256(upgrade.read_bytes()).hexdigest())
     assert (root/"slots/active").read_text().strip()=="b" and command(root/"slots/b","version")==command(upgrade,"version")
+    assert control("status")=="running" and before==(root/"slots/config.json").read_bytes()
+    assert get(18480,"--noproxy","*")=="198.51.100.1"
+    # Real versions share a config: restart the Rust candidate from the prior slot.
     control("rollback")
     assert (root/"slots/active").read_text().strip()=="a"
     assert control("status")=="running" and before==(root/"slots/config.json").read_bytes()
+    assert get(18480,"--noproxy","*")=="198.51.100.1"
+    control("rollback")
+    assert command(root/"slots/b","version")==command(upgrade,"version")
+    control("install",engine,checksum)
+    assert (root/"slots/active").read_text().strip()=="a"
+    assert control("status")=="running" and before==(root/"slots/config.json").read_bytes()
+    assert get(18480,"--noproxy","*")=="198.51.100.1"
     control("firewall")
     assert control("status")=="running"
     os.kill(int((root/"runtime/pid").read_text()),9)

@@ -1,22 +1,40 @@
 #!/bin/sh
 set -eu
 action=$1
+case "$action" in build|package) ;; *) exit 2;; esac
 mkdir -p "$2"
 out=$(cd "$2" && pwd)
+export COPYFILE_DISABLE=1
+target=armv7-unknown-linux-musleabihf
+target_dir=${CARGO_TARGET_DIR:-"$PWD/target"}
+mkdir -p "$target_dir"
+CARGO_TARGET_DIR=$(cd "$target_dir" && pwd)
+export CARGO_TARGET_DIR
+version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml)
+name=kaldor-$version
+if [ "$action" = build ]; then
+ python3 build/cross.py armv7 build --locked --release
+ cp "$CARGO_TARGET_DIR/$target/release/kaldor" "$out/kaldor"
+ exit
+fi
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
-export COPYFILE_DISABLE=1
-version=$(cat VERSION)
-name=kaldor-$version
-cp *.go go.mod go.sum panel.html service.sh kaldorctl Makefile package.sh VERSION README.md LICENSE "$stage/"
-cp -R test "$stage/test"
-if [ -d vendor ]; then cp -R vendor "$stage/vendor"; else go mod vendor -o "$stage/vendor"; fi
-# Compile from the exact tree shipped in the source archive, including its dependencies.
-(cd "$stage" && CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -mod=vendor -trimpath -buildvcs=false \
-  -ldflags="-s -w -X main.version=$version" -o "$out/kaldor" .)
-if [ "$action" = package ]; then
- cp kaldorctl "$out/kaldorctl"
- tar -czf "$out/$name-linux-armv7.tar.gz" -C "$out" kaldor kaldorctl -C "$stage" README.md LICENSE VERSION
- tar -czf "$out/$name-source.tar.gz" -C "$stage" .
- (cd "$out" && sha256sum kaldor "$name-linux-armv7.tar.gz" "$name-source.tar.gz" > SHA256SUMS)
+cp -R src build third_party test panel.html service.sh kaldorctl Cargo.toml Cargo.lock Makefile package.sh README.md LICENSE "$stage/"
+mkdir -p "$stage/.cargo"
+if [ -d vendor ]; then
+ cp -R vendor "$stage/"
+else
+ cargo vendor --locked "$stage/vendor" > /dev/null
 fi
+cat > "$stage/.cargo/config.toml" <<'CONFIG'
+[source.crates-io]
+replace-with = "vendored-sources"
+[source.vendored-sources]
+directory = "vendor"
+CONFIG
+(cd "$stage" && CARGO_NET_OFFLINE=true python3 build/cross.py armv7 build --locked --release)
+cp "$CARGO_TARGET_DIR/$target/release/kaldor" "$out/kaldor"
+cp kaldorctl "$out/kaldorctl"
+tar -czf "$out/$name-linux-armv7.tar.gz" -C "$out" kaldor kaldorctl -C "$stage" README.md LICENSE
+tar -czf "$out/$name-source.tar.gz" -C "$stage" .
+(cd "$out" && sha256sum kaldor "$name-linux-armv7.tar.gz" "$name-source.tar.gz" > SHA256SUMS)
