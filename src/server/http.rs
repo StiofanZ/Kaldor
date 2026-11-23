@@ -59,10 +59,11 @@ async fn handle(mut req: Request<Incoming>, src: SocketAddr, s: Service) -> Resu
         host,
         port: auth.port_u16().unwrap_or(80),
     };
-    let mut up = s.engine.tcp(src.ip(), &t, &t.host).await?;
+    let (mut up, session) = s.engine.tcp(src, &t, &t.host, "HTTP").await?;
     if connect {
         let upgrade = hyper::upgrade::on(&mut req);
         tokio::spawn(async move {
+            let _session = session;
             if let Ok(c) = upgrade.await {
                 let _ = tokio::io::copy_bidirectional(&mut TokioIo::new(c), &mut up).await;
             }
@@ -79,7 +80,10 @@ async fn handle(mut req: Request<Incoming>, src: SocketAddr, s: Service) -> Resu
     strip(req.headers_mut());
     req.headers_mut().insert(HOST, host);
     let (mut tx, conn) = hyper::client::conn::http1::handshake(TokioIo::new(up)).await?;
-    tokio::spawn(conn);
+    tokio::spawn(async move {
+        let _session = session;
+        conn.await
+    });
     let resp = timeout(Duration::from_secs(30), tx.send_request(req)).await??;
     let (mut parts, body) = resp.into_parts();
     strip(&mut parts.headers);

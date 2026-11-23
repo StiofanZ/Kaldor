@@ -9,11 +9,13 @@ import time
 
 panel = (Path(__file__).resolve().parents[1] / "panel.html").read_text()
 mock = """<script>
+let snapshot={total:1,active:[],recent:[{time:1,device:'abc',target:'example.test',port:443,ingress:'HTTP',transport:'TCP',outbound:'direct',result:'opened'}]};
+snapshot.active=[['client',snapshot.recent[0]]];
 let saved,action,releasePhase="current";
 let config={default:'east',devices:[],upstreams:['east','west'].map(name=>({
  name,protocol:'anytls',server:name+'.test:443'})),rules:[{port:443,outbound:'east'},{network:'udp',outbound:'reject'}]};
 window.fetch=async (url,opts)=>{
- if(url.endsWith('page.cgi'))return new Response('<section id="release" data-installed="COMPONENT_VERSION" data-phase="'+releasePhase+'" data-version="0.4.0"></section>');
+ if(url.endsWith('page.cgi'))return new Response('<section id="release" data-installed="COMPONENT_VERSION" data-phase="'+releasePhase+'" data-version="0.4.0"></section><div id="activity-data">'+JSON.stringify(snapshot)+'</div>');
  if(url.endsWith('save.cgi')){const body=JSON.parse(opts.body);
  if(body.component_action){action=body;releasePhase=body.component_action==='check'?'available':'done';}else saved=body;
  return new Response('{"ok":true}');}
@@ -25,9 +27,9 @@ scenario = """<script>
 addEventListener('load',async ()=>{
  try {
   const assert=(ok,msg)=>{if(!ok)throw Error(msg);};
-  for(let i=0;document.querySelector('#settings').inert && i<100;i++)
+  for(let i=0;document.querySelector('#parameters').inert && i<100;i++)
    await new Promise(resolve=>setTimeout(resolve,10));
-  assert(!document.querySelector('#settings').inert,'load: '+document.querySelector('#result').textContent);
+  assert(!document.querySelector('#parameters').inert,'load: '+document.querySelector('#result').textContent);
   const form=document.getElementById('settings');
   const tab=id=>document.getElementById('tab-'+id);
   const active=id=>tab(id).getAttribute('aria-selected')==='true' &&
@@ -35,8 +37,8 @@ addEventListener('load',async ()=>{
    document.getElementById(tab(id).getAttribute('aria-controls')).getClientRects().length>0;
   assert(active('general'),'initial tab');
   tab('general').dispatchEvent(new KeyboardEvent('keydown',{key:'End'}));
-  assert(active('release') && document.activeElement===tab('release') && form.hidden,'keyboard navigation');
-  tab('release').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight'}));
+  assert(active('access') && document.activeElement===tab('access') && form.hidden,'keyboard navigation');
+  tab('access').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight'}));
   assert(active('general') && !form.hidden,'keyboard wrap');
   const port=document.querySelector('#listenPort');
   assert(port.labels[0].textContent.trim()==='代理端口','port label');
@@ -77,7 +79,13 @@ addEventListener('load',async ()=>{
   assert(saved.listen_port===16000,'listen port missing from save');
   assert(saved.default==='west' && saved.rules[1].outbound==='renamed' && !('network' in saved.rules[1]) && saved.rules[0].network==='tcp' && saved.rules[0].outbound==='reject','wrong saved routing');
   assert(saved.upstreams[0].previous_name==='east' && !saved.upstreams[0].secret,'credential edit');
-  tab('release').click();assert(active('release') && form.hidden,'update tab');
+  for(const id of ['connections','access']){
+   tab(id).click();await new Promise(resolve=>setTimeout(resolve,20));
+   assert(active(id) && form.hidden && byId(id).innerText.includes('example.test:443'),'activity '+id);
+  }
+  snapshot=null;byId('access').querySelector('button').click();await new Promise(resolve=>setTimeout(resolve,20));
+  assert(byId('access').innerText.includes('暂无运行数据') && !byId('access').innerText.includes('example.test'),'unavailable snapshot');
+  tab('general').click();assert(active('general') && !byId('release').hidden,'update within general');
   const check=document.getElementById('checkRelease'),install=document.getElementById('installRelease');
   await check.onclick();assert(action.component_action==='check'&&!install.hidden,'release check');
   window.confirm=()=>false;await install.onclick();assert(action.component_action==='check','cancelled upgrade');
@@ -113,7 +121,7 @@ addEventListener('load', async ()=>{
   assert(scrollY>0 && frame.contentWindow.scrollY===0,'scroll owner');
   child.getElementById('rules').lastElementChild.querySelector('.row-tools button:last-child').click();
   assert(await fitted()<tall,'deleting a row did not shrink frame');
-  child.getElementById('tab-release').click();
+  child.getElementById('tab-access').click();
   assert(await fitted()<short && child.scrollingElement.scrollWidth<=frame.clientWidth,'short tab size');
   navigator.sendBeacon('/result','PASS');
  }catch(err){navigator.sendBeacon('/result',String(err));}

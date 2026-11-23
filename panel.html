@@ -15,10 +15,15 @@ header{padding:3px 0 14px;border-bottom:2px solid var(--accent)}
 #status[data-state=running]{color:#a5eaca;border-color:#4e826d}
 #status[data-state=degraded]{color:#ffcf87;border-color:#956e40}
 [hidden]{display:none!important}
-.tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;margin:14px 0}
+.tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;margin:14px 0}
 .tabs button{min-width:0;padding:8px 3px;border-color:transparent;background:transparent;color:var(--muted)}
 .tabs button[aria-selected=true]{background:var(--panel);border-color:var(--edge);box-shadow:inset 0 -2px var(--accent);color:var(--text)}
-#release{color:var(--muted)}
+#release{margin-top:16px;padding-top:12px;border-top:1px solid var(--edge)}
+#release strong{margin-right:auto}
+.activity-head{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.activity-list article{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:9px 0;border-top:1px solid var(--edge);overflow-wrap:anywhere}
+.activity-list{margin-top:10px}.activity-list small{grid-column:1/-1}
+@media(max-width:410px){.tabs{grid-template-columns:repeat(3,minmax(0,1fr))}}
 #releaseResult:not(:empty){display:block;margin-top:6px}
 .card{background:var(--panel);border:1px solid var(--edge);border-radius:8px;padding:14px 16px;margin-bottom:12px}
 .section-head{justify-content:flex-end;margin-bottom:10px}
@@ -50,30 +55,40 @@ output{overflow-wrap:anywhere}
 </style>
 <header><h1>网络代理</h1><div class="service-state"><span>内核：Kaldor vCOMPONENT_VERSION</span><output id="status" aria-live="polite"></output></div></header>
 <div class="tabs" role="tablist" aria-label="网络代理">
-<button type="button" role="tab" id="tab-general" aria-controls="general" aria-selected="true">代理设置</button>
+<button type="button" role="tab" id="tab-general" aria-controls="general" aria-selected="true">参数设置</button>
 <button type="button" role="tab" id="tab-nodes" aria-controls="nodePanel" aria-selected="false" tabindex="-1">上游节点</button>
 <button type="button" role="tab" id="tab-rules" aria-controls="rulePanel" aria-selected="false" tabindex="-1">分流规则</button>
-<button type="button" role="tab" id="tab-release" aria-controls="release" aria-selected="false" tabindex="-1">组件更新</button>
+<button type="button" role="tab" id="tab-connections" aria-controls="connections" aria-selected="false" tabindex="-1">网络连接</button>
+<button type="button" role="tab" id="tab-access" aria-controls="access" aria-selected="false" tabindex="-1">访问日志</button>
 </div>
-<section class="card" id="release" role="tabpanel" aria-labelledby="tab-release" hidden data-phase="RELEASE_PHASE" data-version="RELEASE_VERSION" data-installed="COMPONENT_VERSION">
-<div class="row-tools"><button type="button" id="checkRelease">检查新版本</button>
-<button type="button" id="installRelease" hidden>升级组件</button></div>
-<output id="releaseResult" role="status"></output></section>
-<form id="settings" novalidate inert>
+<form id="settings" novalidate>
 <section class="card" id="general" role="tabpanel" aria-labelledby="tab-general">
-<div class="section-head"><label class="toggle"><input id="enabled" type="checkbox">启用代理</label></div>
+<div id="parameters" data-config inert><div class="section-head"><label class="toggle"><input id="enabled" type="checkbox">启用代理</label></div>
 <div class="fields">
 <div class="port-field"><label for="listenPort">代理端口<input id="listenPort" type="number" min="1" max="65535" step="1" required aria-describedby="portHint"></label>
 <small id="portHint">HTTP 和 SOCKS5 均使用此端口，默认 6000。更改后请同步更新客户端。</small></div>
 <label>默认出口<select id="fallback"></select></label>
 <label class="wide" for="devices">透明代理设备<textarea id="devices" placeholder="每行一个 IPv4 网段，单台设备用 /32" aria-describedby="devicesHint"></textarea></label>
 <small class="wide" id="devicesHint">所选设备的公网 IPv4 TCP 和 UDP 流量进入代理。留空时只启用手动代理。</small>
-</div></section>
-<section class="card" id="nodePanel" role="tabpanel" aria-labelledby="tab-nodes" hidden><div class="section-head"><button type="button" id="newNode">添加节点</button></div>
+</div></div>
+<section id="release" data-phase="RELEASE_PHASE" data-version="RELEASE_VERSION" data-installed="COMPONENT_VERSION">
+<div class="row-tools"><strong>组件更新</strong><button type="button" id="checkRelease">检查新版本</button>
+<button type="button" id="installRelease" hidden>升级组件</button></div>
+<output id="releaseResult" role="status"></output></section>
+</section>
+<section class="card" id="nodePanel" data-config inert role="tabpanel" aria-labelledby="tab-nodes" hidden><div class="section-head"><button type="button" id="newNode">添加节点</button></div>
 <div id="nodes"></div><p class="hint" id="noNodes">尚未添加上游节点。</p></section>
-<section class="card" id="rulePanel" role="tabpanel" aria-labelledby="tab-rules" hidden><div class="section-head"><button type="button" id="newRule">添加规则</button></div>
+<section class="card" id="rulePanel" data-config inert role="tabpanel" aria-labelledby="tab-rules" hidden><div class="section-head"><button type="button" id="newRule">添加规则</button></div>
 <p class="hint">按从上到下的顺序匹配，首条满足全部条件的规则生效。未命中时使用默认出口。</p><div id="rules"></div></section>
-<div class="actions"><button type="submit">保存并应用</button><output role="status" id="result"></output></div></form>
+<div class="actions" data-config inert><button type="submit">保存并应用</button><output role="status" id="result"></output></div></form>
+<section class="card" id="connections" role="tabpanel" aria-labelledby="tab-connections" hidden>
+<div class="activity-head"><output role="status"></output><button type="button">刷新连接</button></div>
+<div class="activity-list"></div></section>
+<section class="card" id="access" role="tabpanel" aria-labelledby="tab-access" hidden>
+<div class="activity-head"><output role="status"></output><button type="button">刷新日志</button></div>
+<p class="hint">仅保留最近 128 次代理出站结果。设备代号在本次运行期间有效，服务重启后记录清空。</p>
+<div class="activity-list"></div></section>
+<script type="application/json" id="activity-data">ACTIVITY_SNAPSHOT</script>
 <script>
 'use strict';
 const byId=id=>document.getElementById(id);
@@ -85,7 +100,9 @@ function selectTab(active){
   tab.setAttribute('aria-selected',String(selected));
   byId(tab.getAttribute('aria-controls')).hidden=!selected;
  }
- byId('settings').hidden=active.getAttribute('aria-controls')==='release';
+ const panel=byId(active.getAttribute('aria-controls'));
+ byId('settings').hidden=!byId('settings').contains(panel);
+ if(byId('settings').hidden)refreshActivity(panel);
 }
 for(const [index,tab] of tabs.entries()){
  tab.onclick=()=>selectTab(tab);
@@ -102,6 +119,43 @@ if(frame && window.ResizeObserver){
  const fit=()=>{frame.style.height=Math.ceil(document.body.getBoundingClientRect().height)+'px';};
  new ResizeObserver(fit).observe(document.body,{box:'border-box'});
  fit();
+}
+let activityRequest=0;
+function showActivity(panel,data){
+ const list=panel.querySelector('.activity-list'),status=panel.querySelector('output');
+ list.replaceChildren();
+ if(!data){status.textContent='暂无运行数据，请确认代理已启动后刷新。';return;}
+ const live=panel.id==='connections',rows=live?data.active:data.recent;
+ status.textContent=live?'活动连接 '+data.total+' 条'+(rows.length<data.total?'，显示 '+rows.length+' 条':''):'最近访问 '+rows.length+' 条';
+ for(const row of rows){
+  const [source,entry]=live?row:[null,row];
+  const item=document.createElement('article'),target=document.createElement('strong'),time=document.createElement('time'),detail=document.createElement('small');
+  target.textContent=(entry.target.includes(':')?'['+entry.target+']':entry.target)+':'+entry.port;
+  time.textContent=new Date(entry.time*1000).toLocaleTimeString();
+  const fields=[entry.ingress+' / '+entry.transport,'设备 '+entry.device,source,'出口 '+entry.outbound];
+  if(!live)fields.push(({opened:'已建立',failed:'连接失败',rejected:'规则拒绝'})[entry.result]);
+  detail.textContent=fields.filter(Boolean).join(' · ');
+  item.append(target,time,detail);list.append(item);
+ }
+}
+async function refreshActivity(panel){
+ const request=++activityRequest;
+ panel.querySelector('output').textContent='正在读取…';
+ try{
+  const res=await fetch('/axproxy-page.cgi',{cache:'no-store'});
+  if(!res.ok)throw Error();
+  const page=new DOMParser().parseFromString(await res.text(),'text/html');
+  const data=JSON.parse(page.getElementById('activity-data').textContent);
+  if(request===activityRequest)showActivity(panel,data);
+ }catch{
+  if(request===activityRequest){
+   panel.querySelector('.activity-list').replaceChildren();
+   panel.querySelector('output').textContent='读取失败，请刷新或重新登录管理页。';
+  }
+ }
+}
+for(const id of ['connections','access']){
+ const panel=byId(id);panel.querySelector('button').onclick=()=>refreshActivity(panel);
 }
 const release=byId('release'),checkRelease=byId('checkRelease'),installRelease=byId('installRelease'),releaseResult=byId('releaseResult');
 let pollTimer;
@@ -227,19 +281,22 @@ function rows(id){
   return obj;
  });
 }
+function lockConfig(locked){
+ for(const group of byId('settings').querySelectorAll('[data-config]'))group.inert=locked;
+}
 async function load(){
  const [r,s]=await Promise.all([fetch('/axproxy-state.cgi',{cache:'no-store'}),fetch('/axproxy-status.cgi',{cache:'no-store'})]);
  if(!r.ok||!s.ok)throw Error('无法读取配置，请重新登录管理页。');
  const c=await r.json();const status=(await s.text()).trim();byId('status').dataset.state=status;byId('status').textContent=({running:'运行中',degraded:'透明路由异常',stopped:'已停止',uninstalled:'未安装'}[status]||'状态未知');
  byId('listenPort').value=c.listen_port??6000;byId('enabled').checked=c.enabled;byId('devices').value=(c.devices||[]).join('\n');
  byId('rules').textContent='';byId('nodes').textContent='';(c.upstreams||[]).forEach(node);(c.rules||[]).forEach(rule);refresh();byId('fallback').value=targetId(c.default||'direct');
- byId('settings').inert=false;
+ lockConfig(false);
 }
 byId('newNode').onclick=()=>node();byId('newRule').onclick=()=>rule();
 byId('settings').onsubmit=async e=>{
  e.preventDefault();
  const form=e.currentTarget;
- if(form.inert)return;
+ if(byId('parameters').inert)return;
  const invalid=form.querySelector('input:invalid,select:invalid,textarea:invalid');
  if(invalid){
   selectTab(byId(invalid.closest('[role="tabpanel"]').getAttribute('aria-labelledby')));
@@ -251,9 +308,9 @@ byId('settings').onsubmit=async e=>{
  if(port===7893){selectTab(byId('tab-general'));byId('listenPort').focus();throw Error('7893 已保留给透明代理，请选择其他端口。');}
  if(port!==6000)config.listen_port=port;
  const used=new Set(['direct','reject']);for(const n of config.upstreams){if(used.has(n.name)){selectTab(byId('tab-nodes'));throw Error('节点名称重复或为保留名称：'+n.name);}used.add(n.name);}
- byId('settings').inert=true;
+ lockConfig(true);
  const r=await fetch('/axproxy-save.cgi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});
  if(!r.ok||!(await r.json()).ok)throw Error('应用失败，请检查监听端口是否被占用，以及节点和分流配置。');try{await load();}catch{out.textContent='已保存，状态读取失败，请刷新页面。';return;}out.textContent='已应用';}
- catch(err){byId('settings').inert=false;out.textContent=err.message;}finally{submit.disabled=false;}};
+ catch(err){lockConfig(false);out.textContent=err.message;}finally{submit.disabled=false;}};
 load().catch(()=>{byId('result').textContent='无法读取配置，请重新登录管理页。';});
 </script></html>

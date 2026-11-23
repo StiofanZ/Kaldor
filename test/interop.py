@@ -4,6 +4,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import socket
@@ -137,6 +138,11 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
         {"protocol":"socks5","server":"127.0.0.1:19080"},
         {"protocol":"vless-reality","server":"127.0.0.1:19444","server_name":"peer.test","public_key":keys[1],"short_id":sid,"secret":user}]
     peers.append(dict(peers[-1],flow="xtls-rprx-vision",secret=vision_user))
+    def activity():
+        match = re.search(r'<script type="application/json" id="activity-data">(.*?)</script>', control("page"), re.S)
+        assert match, "missing activity snapshot"
+        return json.loads(match.group(1))
+
     def get(port,*flags):
         return command(*client,"curl","-fsS","--max-time","8",*flags,f"http://198.51.100.2:{port}/")
     for p in peers:
@@ -175,6 +181,13 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
         else: raise AssertionError("transparent HTTP domain rule")
         assert command(*client,"curl","--noproxy","*","-fsS","--resolve","allowed.example:80:198.51.100.2","http://allowed.example/")=="198.51.100.1"
         assert command(*client,sys.executable,__file__,"socks-udp")=="udp/198.51.100.1"
+        recent = activity()["recent"]
+        observed = {(r["ingress"],r["transport"],r["outbound"],r["result"]) for r in recent}
+        for ingress, transport in [("透明代理","TCP"),("透明代理","UDP"),("SOCKS5","TCP"),("SOCKS5","UDP"),("HTTP","TCP")]:
+            assert (ingress,transport,"node","opened") in observed,(ingress,transport,observed)
+        assert ("透明代理","TCP","reject","rejected") in observed
+        assert not any("source" in r for r in recent)
+        assert secret not in json.dumps(recent)
         print(p["protocol"],p.get("flow",""),"HTTP, CONNECT, SOCKS5, transparent TCP/UDP, bypass and reject PASS",flush=True)
     edited = json.loads(control("view"))
     edited["upstreams"][0].update(previous_name="node", name="renamed")
@@ -228,6 +241,28 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     assert udp_split() == "udp/198.51.100.1"
     control("configure", conf("restore.json", cfg))
     print("same-port TCP/UDP, per-device selection, invalid edit preserves routing PASS", flush=True)
+    control("configure",conf("observe.json",{"enabled":True,"default":"direct"}))
+    assert activity()["recent"] == [], "restart retained access history"
+    with subprocess.Popen([*client, sys.executable, "-c",
+        "import socket,sys;s=socket.create_connection(('192.0.2.1',6000),4);"
+        "s.sendall(b'CONNECT 198.51.100.2:18480 HTTP/1.1\\r\\nHost: 198.51.100.2:18480\\r\\n\\r\\n');"
+        "print(s.recv(1024).split()[1].decode(),flush=True);sys.stdin.read(1)"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE) as held:
+        try:
+            assert held.stdout.readline().strip()==b'200'
+            snapshot=activity()
+            assert snapshot["total"]==1 and len(snapshot["active"])==1
+            source,row=snapshot["active"][0]
+            assert source.startswith("192.0.2.2:") and row["target"]=="198.51.100.2" and row["outbound"]=="direct"
+        finally:
+            held.communicate(input=b'x',timeout=5)
+    wait(lambda: activity()["total"]==0)
+    try: get(18483,"--noproxy","","-x","http://192.0.2.1:6000")
+    except subprocess.CalledProcessError: pass
+    else: raise AssertionError("expected refused destination")
+    assert activity()["recent"][0]["result"]=="failed"
+    control("configure",conf("restore.json",cfg))
+    print("live CONNECT lifetime, access results, source privacy and restart reset PASS",flush=True)
     def manual(port):
         for scheme in ("http", "socks5h"):
             assert get(18480, "--noproxy", "", "-x", f"{scheme}://192.0.2.1:{port}") == "198.51.100.1"

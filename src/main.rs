@@ -1,3 +1,4 @@
+mod activity;
 mod config;
 mod outbound;
 mod release;
@@ -29,7 +30,13 @@ async fn execute() -> Result<()> {
         }
         "page" => {
             let dir = std::env::var("AXPROXY_RUN").unwrap_or_else(|_| "/tmp/axproxy".into());
-            print!("{}", release::page(Path::new(&dir))?);
+            print!(
+                "{}",
+                release::page(Path::new(&dir))?.replace(
+                    "ACTIVITY_SNAPSHOT",
+                    &activity::panel_data(Path::new(&dir)).await
+                )
+            );
             return Ok(());
         }
         "release-request" if args.len() == 3 => {

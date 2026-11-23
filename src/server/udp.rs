@@ -114,7 +114,12 @@ async fn forward(
     target: Target,
     mut outgoing: mpsc::Receiver<Vec<u8>>,
 ) -> Result<()> {
-    let upstream = service.engine.udp(src.ip(), &target).await?;
+    let ingress = if manual.is_some() {
+        "SOCKS5"
+    } else {
+        "透明代理"
+    };
+    let (upstream, _session) = service.engine.udp(src, &target, ingress).await?;
     let (socket, prefix) = match manual {
         Some(socket) => {
             let mut prefix = vec![0; 3];

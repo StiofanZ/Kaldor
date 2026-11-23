@@ -78,6 +78,12 @@ pub async fn run(cfg: Config, lan: &str, iface: &str, path: &str) -> Result<()> 
         let s = service.clone();
         workers.spawn(async move { udp::transparent(u, s).await });
     }
+    let directory = std::path::Path::new(path)
+        .parent()
+        .context("missing runtime directory")?;
+    let activity = service.engine.activity.clone();
+    let socket = crate::activity::Activity::listener(directory)?;
+    workers.spawn(activity.serve(socket));
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -118,7 +124,7 @@ async fn accept(listener: TcpListener, s: Service, transparent: bool) -> Result<
                     (vec![], String::new())
                 };
                 let target = Target::from_socket(dest);
-                let mut up = s.engine.tcp(from.ip(), &target, &domain).await?;
+                let (mut up, _session) = s.engine.tcp(from, &target, &domain, "透明代理").await?;
                 up.write_all(&data).await?;
                 tokio::io::copy_bidirectional(&mut c, &mut up).await?;
                 Ok(())
@@ -188,7 +194,7 @@ async fn socks(mut c: TcpStream, src: SocketAddr, s: Service) -> Result<()> {
     .await??;
     match cmd {
         1 => {
-            let Ok(mut up) = s.engine.tcp(src.ip(), &t, &t.host).await else {
+            let Ok((mut up, _session)) = s.engine.tcp(src, &t, &t.host, "SOCKS5").await else {
                 return reply(&mut c, 1, None).await;
             };
             reply(&mut c, 0, None).await?;

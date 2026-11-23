@@ -131,6 +131,7 @@ impl Target {
 }
 pub struct Engine {
     pub cfg: Config,
+    pub activity: crate::activity::Activity,
     nodes: HashMap<String, Adapter>,
 }
 impl Engine {
@@ -144,19 +145,23 @@ impl Engine {
         for u in &cfg.upstreams {
             nodes.insert(u.name.clone(), adapter(u)?);
         }
-        Ok(Self { cfg, nodes })
+        Ok(Self {
+            cfg,
+            nodes,
+            activity: Default::default(),
+        })
     }
     fn select(
         &self,
         src: IpAddr,
         t: &Target,
-        domain: &str,
+        outbound: &str,
         network: Network,
     ) -> Result<(&Adapter, Metadata)> {
         ensure!(t.port > 0, "invalid port");
         let a = self
             .nodes
-            .get(self.cfg.route(src, t.addr(), t.port, domain, network))
+            .get(outbound)
             .ok_or_else(|| anyhow::anyhow!("rejected by rule"))?;
         let mut meta = Metadata {
             src_ip: Some(src),
@@ -170,8 +175,31 @@ impl Engine {
         }
         Ok((a, meta))
     }
-    pub async fn tcp(&self, src: IpAddr, t: &Target, domain: &str) -> Result<Connection> {
-        let (adapter, m) = self.select(src, t, domain, Network::Tcp)?;
+    pub async fn tcp(
+        &self,
+        src: SocketAddr,
+        t: &Target,
+        domain: &str,
+        ingress: &'static str,
+    ) -> Result<(Connection, crate::activity::Session)> {
+        let outbound = self
+            .cfg
+            .route(src.ip(), t.addr(), t.port, domain, Network::Tcp);
+        let result = self.dial_tcp(src.ip(), t, outbound).await;
+        self.activity.record(
+            crate::activity::Access {
+                source: src,
+                target: t,
+                domain,
+                ingress,
+                transport: "TCP",
+                outbound,
+            },
+            result,
+        )
+    }
+    async fn dial_tcp(&self, src: IpAddr, t: &Target, outbound: &str) -> Result<Connection> {
+        let (adapter, m) = self.select(src, t, outbound, Network::Tcp)?;
         timeout(Duration::from_secs(12), async {
             match adapter {
                 Adapter::Standard(a) | Adapter::Vision { tcp: a, .. } => {
@@ -182,8 +210,30 @@ impl Engine {
         })
         .await?
     }
-    pub async fn udp(&self, src: IpAddr, t: &Target) -> Result<Packets> {
-        let (adapter, m) = self.select(src, t, &t.host, Network::Udp)?;
+    pub async fn udp(
+        &self,
+        src: SocketAddr,
+        t: &Target,
+        ingress: &'static str,
+    ) -> Result<(Packets, crate::activity::Session)> {
+        let outbound = self
+            .cfg
+            .route(src.ip(), t.addr(), t.port, &t.host, Network::Udp);
+        let result = self.dial_udp(src.ip(), t, outbound).await;
+        self.activity.record(
+            crate::activity::Access {
+                source: src,
+                target: t,
+                domain: &t.host,
+                ingress,
+                transport: "UDP",
+                outbound,
+            },
+            result,
+        )
+    }
+    async fn dial_udp(&self, src: IpAddr, t: &Target, outbound: &str) -> Result<Packets> {
+        let (adapter, m) = self.select(src, t, outbound, Network::Udp)?;
         timeout(Duration::from_secs(12), async {
             match adapter {
                 Adapter::Standard(a) | Adapter::Vision { udp: a, .. } => {
