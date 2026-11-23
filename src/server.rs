@@ -99,6 +99,7 @@ pub async fn run(cfg: Config, lan: &str, iface: &str, path: &str) -> Result<()> 
         udp_slots: Arc::new(Semaphore::new(256)),
     };
     let mut workers = tokio::task::JoinSet::new();
+    service.engine.start_probes(&mut workers)?;
     let manual = service.listener(port, false)?;
     workers.spawn(accept(manual, service.clone(), false));
     if transparent {

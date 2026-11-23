@@ -22,24 +22,25 @@ def response(query, addr):
     return query[:2] + struct.pack("!5H", 0x8180, 1, count, 0, 0) + query[12:] + rr * count
 
 
+class Doh(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_POST(self):
+        assert self.headers["Host"] == AUTHORITY and self.path == "/dns-query"
+        assert self.headers["Content-Type"] == "application/dns-message"
+        query = self.rfile.read(int(self.headers["Content-Length"]))
+        body = response(query, ENCRYPTED)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/dns-message")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
 def server(root):
-    class Doh(http.server.BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.1"
-
-        def do_POST(self):
-            assert self.headers["Host"] == AUTHORITY and self.path == "/dns-query"
-            assert self.headers["Content-Type"] == "application/dns-message"
-            query = self.rfile.read(int(self.headers["Content-Length"]))
-            body = response(query, ENCRYPTED)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/dns-message")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *args):
-            pass
-
     class PlainUDP(socketserver.BaseRequestHandler):
         def handle(self):
             query, sock = self.request

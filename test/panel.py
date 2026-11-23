@@ -76,9 +76,35 @@ addEventListener('load',async ()=>{
   protocol(second).value='tcp';click(second,'上移');
   document.querySelector('#settings').requestSubmit();
   await new Promise(resolve=>setTimeout(resolve,10));
+  for(let i=0;byId('result').textContent!=='已应用' && i<100;i++)await new Promise(r=>setTimeout(r,10));
+  assert(byId('result').textContent==='已应用','initial save did not finish');
   assert(saved.listen_port===16000,'listen port missing from save');
   assert(saved.default==='west' && saved.rules[1].outbound==='renamed' && !('network' in saved.rules[1]) && saved.rules[0].network==='tcp' && saved.rules[0].outbound==='reject','wrong saved routing');
   assert(saved.upstreams[0].previous_name==='east' && !saved.upstreams[0].secret,'credential edit');
+  tab('policies').click();document.getElementById('newPolicy').click();
+  const group=byId('policies').firstElementChild, key=k=>group.querySelector('[data-key='+k+']');
+  key('name').value='office';key('name').dispatchEvent(new Event('input'));
+  const members=[...group.querySelectorAll('.member-list input')];
+  members.forEach(m=>m.click());key('selected').value=members[1].value;
+  fallback.value=group.id;byId('rules').querySelector('[data-key=outbound]').value=group.id;
+  const renamed=byId(members[1].value).querySelector('[data-key=name]');
+  renamed.value='backup';renamed.dispatchEvent(new Event('input'));
+  click(byId(members[1].value),'删除');click(group,'删除');
+  assert(group.isConnected && renamed.isConnected,'policy reference protection');
+  key('name').value='proxy';key('name').dispatchEvent(new Event('input'));
+  assert(fallback.value===group.id && group.isConnected,'policy option missing before save');
+  byId('result').textContent='';form.requestSubmit();
+  for(let i=0;byId('result').textContent!=='已应用' && i<100;i++)await new Promise(r=>setTimeout(r,10));
+  assert(saved.default==='proxy' && saved.rules[0].outbound==='proxy','policy rename lost route');
+  assert(saved.policies[0].selected==='backup' && saved.policies[0].members.join(',')==='east,backup','policy member rename');
+  config=saved;await load();
+  for(const kind of ['auto','load_balance']){
+   const row=byId('policies').firstElementChild, mode=row.querySelector('[data-key=type]');
+   mode.value=kind;mode.dispatchEvent(new Event('change'));
+   assert(row.querySelector('[data-key=selected]').disabled,'manual field enabled');
+   form.requestSubmit();await new Promise(resolve=>setTimeout(resolve,20));
+   assert(saved.policies[0].type===kind && !('selected' in saved.policies[0]),'policy type save');
+  }
   for(const id of ['connections','access']){
    tab(id).click();await new Promise(resolve=>setTimeout(resolve,20));
    assert(active(id) && form.hidden && byId(id).innerText.includes('example.test:443'),'activity '+id);

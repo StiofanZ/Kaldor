@@ -125,7 +125,7 @@ impl Resolver {
                 && query.queries.len() == 1,
             "expected a single DNS question"
         );
-        let resolver = Target {
+        let resolver = &Target {
             host: RESOLVER_IP.to_string(),
             port: 443,
         };
@@ -137,32 +137,35 @@ impl Resolver {
             HOST,
             Network::Tcp,
         );
-        let result = async {
-            let data = timeout(
-                LIMIT,
-                self.exchange(engine, src, &resolver, outbound, wire.into()),
-            )
-            .await??;
-            let reply = Message::from_vec(&data)?;
-            ensure!(
-                reply.metadata.id == query.metadata.id
-                    && reply.metadata.message_type == MessageType::Response
-                    && reply.metadata.op_code == OpCode::Query
-                    && reply.queries == query.queries,
-                "unmatched DoH reply"
-            );
-            if udp && data.len() > usize::from(query.max_payload().min(1232)) {
-                let mut truncated = reply.truncate();
-                truncated.edns = None;
-                return Ok(truncated.to_vec()?.into());
-            }
-            Ok(data)
-        }
-        .await;
+        let wire = Bytes::from(wire);
+        let (outbound, result) = engine
+            .via(outbound, |node| {
+                let query = &query;
+                let wire = wire.clone();
+                async move {
+                    let data =
+                        timeout(LIMIT, self.exchange(engine, src, resolver, node, wire)).await??;
+                    let reply = Message::from_vec(&data)?;
+                    ensure!(
+                        reply.metadata.id == query.metadata.id
+                            && reply.metadata.message_type == MessageType::Response
+                            && reply.metadata.op_code == OpCode::Query
+                            && reply.queries == query.queries,
+                        "unmatched DoH reply"
+                    );
+                    if udp && data.len() > usize::from(query.max_payload().min(1232)) {
+                        let mut truncated = reply.truncate();
+                        truncated.edns = None;
+                        return Ok(truncated.to_vec()?.into());
+                    }
+                    Ok(data)
+                }
+            })
+            .await;
         match engine.activity.record(
             Access {
                 source: src,
-                target: &resolver,
+                target: resolver,
                 domain: HOST,
                 ingress: "透明 DNS",
                 transport: "TCP",

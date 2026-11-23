@@ -21,7 +21,36 @@ pub struct Config {
     pub rules: Vec<Rule>,
     #[serde(deserialize_with = "list")]
     pub upstreams: Vec<Upstream>,
+    #[serde(deserialize_with = "list", skip_serializing_if = "Vec::is_empty")]
+    pub policies: Vec<Policy>,
 }
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Policy {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: PolicyType,
+    pub members: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyType {
+    Manual,
+    Auto,
+    LoadBalance,
+}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 48
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+}
+
 #[derive(Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Rule {
@@ -105,16 +134,38 @@ impl Config {
         let mut names = HashSet::from(["direct", "reject"]);
         for u in &self.upstreams {
             ensure!(
-                !u.name.is_empty()
-                    && u.name.len() <= 48
-                    && u.name
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
-                    && names.insert(&u.name),
+                valid_name(&u.name) && names.insert(&u.name),
                 "duplicate or invalid upstream name"
             );
             u.validate()
                 .with_context(|| format!("upstream {}", u.name))?;
+        }
+        ensure!(self.policies.len() <= 32, "too many policies");
+        let nodes: HashSet<_> = self.upstreams.iter().map(|n| n.name.as_str()).collect();
+        for p in &self.policies {
+            ensure!(
+                valid_name(&p.name) && names.insert(&p.name),
+                "duplicate or invalid policy name"
+            );
+            let mut seen = HashSet::new();
+            ensure!(
+                !p.members.is_empty()
+                    && p.members
+                        .iter()
+                        .all(|n| nodes.contains(n.as_str()) && seen.insert(n)),
+                "policy {} requires distinct existing nodes",
+                p.name
+            );
+            match p.kind {
+                PolicyType::Manual => ensure!(
+                    p.selected.as_ref().is_some_and(|n| seen.contains(n)),
+                    "manual policy requires a selected member"
+                ),
+                _ => ensure!(
+                    p.selected.is_none(),
+                    "only manual policies accept a selected member"
+                ),
+            }
         }
         ensure!(
             names.contains(self.default.as_str()),
@@ -424,6 +475,41 @@ mod tests {
             cfg.merge(&old).unwrap();
             assert_eq!(!cfg.upstreams[0].secret.is_empty(), reuse);
         }
+    }
+
+    #[test]
+    fn policy_references_must_resolve_to_nodes_and_manual_selection_to_a_member() {
+        let base = serde_json::json!({
+            "default":"group", "rules":[{"network":"udp","outbound":"group"}],
+            "upstreams":[{"name":"east","protocol":"socks5","server":"east.test:1080"}],
+            "policies":[{"name":"group","type":"manual","members":["east"],"selected":"east"}]
+        });
+        for (key, value) in [
+            ("members", serde_json::json!([])),
+            ("members", serde_json::json!(["east", "east"])),
+            ("members", serde_json::json!(["reject"])),
+            ("members", serde_json::json!(["group"])),
+            ("members", serde_json::json!(["missing"])),
+            ("selected", serde_json::json!("missing")),
+            ("selected", serde_json::Value::Null),
+            ("type", serde_json::json!("auto")),
+            ("name", serde_json::json!("east")),
+            ("name", serde_json::json!("direct")),
+        ] {
+            let mut invalid = base.clone();
+            invalid["policies"][0][key] = value;
+            assert!(
+                serde_json::from_value::<Config>(invalid)
+                    .unwrap()
+                    .validate()
+                    .is_err(),
+                "{key}"
+            );
+        }
+        serde_json::from_value::<Config>(base)
+            .unwrap()
+            .validate()
+            .unwrap();
     }
 
     #[test]

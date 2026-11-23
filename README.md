@@ -38,7 +38,18 @@ kaldorctl status
 
 ## 设置
 
-在华硕管理页左侧进入「网络代理」。在「上游节点」添加节点，在「参数设置」选择默认出口并启用服务，在「分流规则」调整匹配顺序。切换标签保留当前编辑；「保存并应用」一次提交这三个标签的配置。在「参数设置」中可单独检查和升级组件。按顺序匹配规则，同一条规则的所有条件同时生效。可组合源设备 CIDR、目的 CIDR、域名后缀、目的端口和传输协议（TCP、UDP 或两者），并选择节点、direct 或 reject。未命中时使用默认出口。HTTP（含 CONNECT）和 SOCKS5 共用主 LAN 的一个 TCP 端口，默认 6000。可在管理页修改「代理端口」并保存，或设置配置字段 `listen_port`（1–65535，7893 保留给透明代理）。保存成功后旧监听关闭，客户端须改用新端口。目标端口已占用导致应用失败时，组件恢复原配置和监听。升级前使用 7890 或 7891 的客户端需改用 6000。SOCKS5 的 UDP ASSOCIATE 单独分配 LAN 数据端口。允许访问主 LAN 的客户端可以使用这些入口。
+在华硕管理页左侧进入「网络代理」。在「代理节点」添加节点，在「参数设置」选择默认出口并启用服务，在「分流规则」调整匹配顺序。切换标签保留当前编辑；「保存并应用」一次提交当前编辑的配置。在「参数设置」中可单独检查和升级组件。按顺序匹配规则，同一条规则的所有条件同时生效。可组合源设备 CIDR、目的 CIDR、域名后缀、目的端口和传输协议（TCP、UDP 或两者），并选择节点、代理策略、direct 或 reject。未命中时使用默认出口。HTTP（含 CONNECT）和 SOCKS5 共用主 LAN 的一个 TCP 端口，默认 6000。可在管理页修改「代理端口」并保存，或设置配置字段 `listen_port`（1–65535，7893 保留给透明代理）。保存成功后旧监听关闭，客户端须改用新端口。目标端口已占用导致应用失败时，组件恢复原配置和监听。升级前使用 7890 或 7891 的客户端需改用 6000。SOCKS5 的 UDP ASSOCIATE 单独分配 LAN 数据端口。允许访问主 LAN 的客户端可以使用这些入口。
+
+在「代理策略」中创建策略并勾选成员节点，随后可在默认出口和任意分流规则中使用策略名称。节点和策略共享名称空间。策略只接受代理节点作为成员。改名时管理页同步更新引用，被引用的节点或策略需先解除引用才能删除。
+
+| 策略类型 | 新流量如何选节点 |
+|---|---|
+| 手动选择 | 使用指定成员。 |
+| 自动选择 | 服务启动时经各成员连接 `1.1.1.1:443` 并校验 `cloudflare-dns.com` 的 TLS 证书，比较从建立代理连接到完成 TLS 握手的耗时。每轮结束 60 秒后重新检测，单节点超时 5 秒。首批请求等待首次结果。从最快的可用节点开始尝试，建连失败时尝试其他通过检测的成员。全部不可用时返回失败。 |
+| 负载均衡 | 按成员顺序轮流分配新 TCP 连接、UDP 会话和透明 DNS 查询。已建立的流量继续使用原节点。 |
+
+策略保存于配置的 `policies` 数组。例如 `{"name":"office","type":"manual","members":["east","west"],"selected":"west"}`。自动选择和负载均衡的 `type` 分别为 `auto` 和 `load_balance`，省略 `selected`。仅自动策略的成员参与测速，同一节点每轮只测一次。活动连接和访问日志显示实际使用的节点；自动策略无可用成员时，失败记录显示策略名称。
+
 
 「活动连接」显示代理已建立且仍打开的 TCP 出站连接或 UDP 会话，包括客户端地址、目标、入口、传输协议和实际出口。透明 TCP 可从 80、8080 端口的 HTTP Host 和 443、8443 端口的 TLS ClientHello SNI 取得可见域名。缺少域名规则时，在转发过程中读取这些信息；两页同时更新目标，出口沿用实际路由结果。透明 UDP 会在已转发的 QUIC v1/v2 客户端 Initial 中识别可见 SNI，支持分片 ClientHello。仅更新本次 UDP 会话在两页中的显示，不改变目的地址或已选出口。其他 UDP、缺少可见名称或超出识别上限的连接显示目标 IP。使用 ECH 时仅能看到外层名称。总数包含全部活动连接，最多跟踪 128 条明细。「访问日志」记录最近 128 次出站建立结果（建立、规则拒绝、连接失败），其中“已建立”指建立出站成功。两个标签在打开或点击刷新时读取快照。访问记录仅存在工作进程内存中，重启服务或应用配置后清空；设备代号只在本次运行内有效。日志中只显示目标主机和端口，不保存客户端内网地址、完整 URL、请求内容或凭据。
 
@@ -80,6 +91,7 @@ cargo test --locked
 python3 test/panel.py "$CHROMIUM"
 rustup target add aarch64-unknown-linux-musl
 python3 build/cross.py aarch64 build --locked --release
+sudo unshare -n sh -c 'ip link set lo up && python3 test/policy.py "$1"' sh target/aarch64-unknown-linux-musl/release/kaldor
 python3 test/component_update.py ./kaldor ./kaldor-next ./kaldorctl  # Linux 上两个版本递增的本地构建
 sudo unshare --pid --fork --mount-proc --net python3 test/startup.py target/aarch64-unknown-linux-musl/release/kaldor ./kaldorctl
 sudo unshare -n python3 test/interop.py target/aarch64-unknown-linux-musl/release/kaldor ./kaldorctl "$SING_BOX" "$XRAY" "$PREVIOUS_COMPONENT"

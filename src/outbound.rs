@@ -133,6 +133,7 @@ pub struct Engine {
     pub cfg: Config,
     pub activity: crate::activity::Activity,
     nodes: HashMap<String, Adapter>,
+    pub(crate) policies: crate::policy::Policies,
 }
 impl Engine {
     pub fn new(cfg: Config) -> Result<Self> {
@@ -146,6 +147,7 @@ impl Engine {
             nodes.insert(u.name.clone(), adapter(u)?);
         }
         Ok(Self {
+            policies: crate::policy::Policies::new(&cfg),
             cfg,
             nodes,
             activity: Default::default(),
@@ -186,7 +188,9 @@ impl Engine {
         let outbound = self
             .cfg
             .route(src.ip(), reserved, t.addr(), t.port, domain, Network::Tcp);
-        let result = self.dial_tcp(src.ip(), t, outbound).await;
+        let (outbound, result) = self
+            .via(outbound, |node| self.dial_tcp(src.ip(), t, node))
+            .await;
         self.activity.record(
             crate::activity::Access {
                 source: src,
@@ -226,7 +230,9 @@ impl Engine {
         let outbound = self
             .cfg
             .route(src.ip(), reserved, t.addr(), t.port, &t.host, Network::Udp);
-        let result = self.dial_udp(src.ip(), t, outbound).await;
+        let (outbound, result) = self
+            .via(outbound, |node| self.dial_udp(src.ip(), t, node))
+            .await;
         self.activity.record(
             crate::activity::Access {
                 source: src,
