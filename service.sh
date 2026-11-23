@@ -126,7 +126,7 @@ case "$1" in
   "$bin" merge "$2" "$cfg" > "$root/config.new" || { rm -f "$root/config.new"; exit 1; }
   stop
   if launch "$bin" "$root/config.new" && mv "$root/config.new" "$cfg"; then exit 0; fi
-  stop; launch "$bin" "$cfg"; exit 1;;
+  stop; rm -f "$root/config.new"; launch "$bin" "$cfg"; exit 1;;
  start)
   code=0
   stop && launch "$bin" "$cfg" || code=$?

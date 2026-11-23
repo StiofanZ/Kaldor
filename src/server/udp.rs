@@ -159,7 +159,9 @@ pub(super) async fn transparent(sock: UdpSocket, s: Service) -> Result<()> {
     loop {
         sock.readable().await?;
         match sock.try_io(Interest::READABLE, || receive(&sock, &mut data)) {
-            Ok((n, src, dst)) if dst != SocketAddr::from((s.lan, 7893)) => {
+            Ok((n, src, dst))
+                if dst != SocketAddr::from((s.lan, crate::config::TRANSPARENT_PORT)) =>
+            {
                 flows.feed(src, Target::from_socket(dst), &data[..n])
             }
             Err(e)

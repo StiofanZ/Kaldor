@@ -151,7 +151,7 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
             try:
                 wait(lambda: ready.exists() or target.poll() is not None)
                 assert target.poll() is None,"ARMv7 manual listener"
-                for addr in ["http://127.0.0.1:7890","socks5h://127.0.0.1:7891"]:
+                for addr in ["http://127.0.0.1:6000","socks5h://127.0.0.1:6000"]:
                     assert command("curl","--noproxy","","-x",addr,"-fsS","--max-time","8","http://198.51.100.2:18480")=="198.51.100.1"
                 print("ARMv7 HTTP/SOCKS5",p["protocol"],p.get("flow",""),"PASS",flush=True)
             finally:
@@ -159,9 +159,9 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
         control("configure",conf("input.json",cfg))
         assert control("status")=="running"
         assert all(not x["secret"] if "secret" in x else True for x in json.loads(control("view"))["upstreams"])
-        for proto,port in [("http",7890),("socks5h",7891)]:
+        for proto,port in [("http",6000),("socks5h",6000)]:
             assert get(18480,"--noproxy","","-x",f"{proto}://192.0.2.1:{port}")=="198.51.100.1",(p["protocol"],proto)
-        assert get(18480,"--noproxy","","--proxytunnel","-x","http://192.0.2.1:7890")=="198.51.100.1"
+        assert get(18480,"--noproxy","","--proxytunnel","-x","http://192.0.2.1:6000")=="198.51.100.1"
         assert get(18480,"--noproxy","*")=="198.51.100.1","transparent TCP"
         assert get(18481,"--noproxy","*","--interface","192.0.2.3")=="192.0.2.3","unselected"
         try: get(18481,"--noproxy","*")
@@ -180,9 +180,9 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     edited["upstreams"][0].update(previous_name="node", name="renamed")
     edited.update(default="reject", rules=[{"port": 18480, "outbound": "renamed"}])
     control("configure", conf("edit.json", edited))
-    assert get(18480, "--noproxy", "", "-x", "http://192.0.2.1:7890") == "198.51.100.1"
+    assert get(18480, "--noproxy", "", "-x", "http://192.0.2.1:6000") == "198.51.100.1"
     try:
-        get(18481, "--noproxy", "", "-x", "http://192.0.2.1:7890")
+        get(18481, "--noproxy", "", "-x", "http://192.0.2.1:6000")
     except subprocess.CalledProcessError:
         pass
     else:
@@ -202,15 +202,15 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     rules = [{"source":"192.0.2.2/32", "port":18482, "network":"tcp", "outbound":"reject"},
              {"port":18482, "network":"udp", "outbound":"node"}]
     control("configure", conf("split.json", dict(cfg, rules=rules, default="direct")))
-    for flags in [("--noproxy", "*"), ("--noproxy", "", "-x", "http://192.0.2.1:7890"),
-                  ("--noproxy", "", "-x", "socks5h://192.0.2.1:7891")]:
+    for flags in [("--noproxy", "*"), ("--noproxy", "", "-x", "http://192.0.2.1:6000"),
+                  ("--noproxy", "", "-x", "socks5h://192.0.2.1:6000")]:
         try:
             get(18482, *flags)
         except subprocess.CalledProcessError:
             pass
         else:
             raise AssertionError(("TCP rule ignored", flags))
-    assert get(18482, "--interface", "192.0.2.3", "--noproxy", "", "-x", "http://192.0.2.1:7890") == "198.51.100.1"
+    assert get(18482, "--interface", "192.0.2.3", "--noproxy", "", "-x", "http://192.0.2.1:6000") == "198.51.100.1"
     assert tcp_split("--interface", "192.0.2.3") == "192.0.2.3"
     assert udp_split() == "udp/198.51.100.1"
     assert command(*client, sys.executable, __file__, "socks-udp") == "udp/198.51.100.1"
@@ -228,6 +228,34 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     assert udp_split() == "udp/198.51.100.1"
     control("configure", conf("restore.json", cfg))
     print("same-port TCP/UDP, per-device selection, invalid edit preserves routing PASS", flush=True)
+    def manual(port):
+        for scheme in ("http", "socks5h"):
+            assert get(18480, "--noproxy", "", "-x", f"{scheme}://192.0.2.1:{port}") == "198.51.100.1"
+    def closed(port):
+        with socket.socket() as client_socket:
+            client_socket.settimeout(1)
+            assert client_socket.connect_ex(("192.0.2.1",port)) != 0
+        assert f":{port} " not in command("ss", "-ltn")
+    changed = dict(cfg, listen_port=16000)
+    control("configure",conf("port.json",changed))
+    manual(16000)
+    for port in (6000,7890,7891): closed(port)
+    control("stop");control("start");manual(16000)
+    with socket.socket() as occupied:
+        occupied.bind(("192.0.2.1",0));occupied.listen()
+        port = occupied.getsockname()[1]
+        try: control("configure",conf("busy.json",dict(cfg,listen_port=port)))
+        except subprocess.CalledProcessError: pass
+        else: raise AssertionError("occupied proxy port accepted")
+        manual(16000)
+        assert json.loads(control("view"))["listen_port"] == 16000
+    for port in (0, 65536, 7893):
+        try: control("configure",conf("invalid-port.json",dict(cfg,listen_port=port)))
+        except subprocess.CalledProcessError: pass
+        else: raise AssertionError(("invalid port", port))
+    control("configure",conf("restore.json",cfg))
+    manual(6000);closed(16000)
+    print("mixed HTTP/SOCKS5 port, old listener closure, restart, conflict recovery PASS",flush=True)
     before=(root/"slots/config.json").read_bytes()
     try:control("install",engine,"0"*64)
     except subprocess.CalledProcessError:pass
@@ -265,7 +293,7 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
 if __name__=="__main__":
     if sys.argv[1:]==["origin"]:origin()
     elif sys.argv[1:]==["socks-udp"]:
-        with socket.create_connection(("192.0.2.1",7891),timeout=5) as control:
+        with socket.create_connection(("192.0.2.1",6000),timeout=5) as control:
             control.sendall(bytes.fromhex("050100"));assert control.recv(2)==bytes.fromhex("0500")
             control.sendall(bytes.fromhex("05030001000000000000"))
             fp=control.makefile("rb");head=fp.read(4);assert head==bytes.fromhex("05000001")

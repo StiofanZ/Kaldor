@@ -2,7 +2,7 @@ use anyhow::{Context, Result, ensure};
 use ipnet::IpNet;
 use meow_common::Network;
 use serde::{Deserialize, Deserializer, Serialize};
-use std::{collections::HashSet, fs::File, io::Read, net::IpAddr};
+use std::{collections::HashSet, fs::File, io::Read, net::IpAddr, num::NonZeroU16};
 
 fn list<'de, T: Deserialize<'de>, D: Deserializer<'de>>(d: D) -> Result<Vec<T>, D::Error> {
     Ok(Option::<Vec<T>>::deserialize(d)?.unwrap_or_default())
@@ -12,6 +12,8 @@ fn list<'de, T: Deserialize<'de>, D: Deserializer<'de>>(d: D) -> Result<Vec<T>, 
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    listen_port: Option<NonZeroU16>,
     pub default: String,
     #[serde(deserialize_with = "list")]
     pub devices: Vec<IpNet>,
@@ -78,7 +80,12 @@ pub struct Upstream {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub flow: String,
 }
+pub const TRANSPARENT_PORT: u16 = 7893;
+
 impl Config {
+    pub fn listen_port(&self) -> u16 {
+        self.listen_port.map_or(6000, NonZeroU16::get)
+    }
     pub fn read(file: &str) -> Result<Self> {
         let mut buf = Vec::new();
         File::open(file)?.take(65537).read_to_end(&mut buf)?;
@@ -87,6 +94,10 @@ impl Config {
             .map_err(|_| anyhow::anyhow!("invalid configuration JSON or unknown field"))
     }
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.listen_port() != TRANSPARENT_PORT,
+            "manual port conflicts with transparent listener"
+        );
         ensure!(
             self.upstreams.len() <= 32 && self.devices.len() <= 128 && self.rules.len() <= 512,
             "configuration limit exceeded"

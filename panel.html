@@ -17,7 +17,8 @@ button[type=submit]{background:#106481}.status{color:#c5efff}.actions{justify-co
 <button type="button" id="installRelease" hidden>升级组件</button>
 <output id="releaseResult" role="status"></output></section>
 <form id="settings" inert><fieldset><label class="toggle"><input id="enabled" type="checkbox"> 启用代理</label>
-<p>局域网 HTTP 端口 7890，SOCKS5 端口 7891。</p>
+<label>HTTP / SOCKS5 共用端口<input id="listenPort" type="number" min="1" max="65535" step="1" required></label>
+<small>默认 6000。修改并保存后，请同步更新客户端端口。</small>
 <label for="devices">透明代理设备</label><textarea id="devices" placeholder="每行一个源 IPv4 网段，单台设备用 /32"></textarea>
 <small>留空时只开放手动入口。透明接管覆盖所选设备的公网 IPv4 TCP 和 UDP。</small></fieldset>
 <h2>上游节点</h2><div id="nodes"></div><button type="button" id="newNode">添加节点</button>
@@ -153,17 +154,20 @@ async function load(){
  const [r,s]=await Promise.all([fetch('/axproxy-state.cgi',{cache:'no-store'}),fetch('/axproxy-status.cgi',{cache:'no-store'})]);
  if(!r.ok||!s.ok)throw Error('无法读取配置，请重新登录管理页。');
  const c=await r.json();const status=(await s.text()).trim();byId('status').textContent='vCOMPONENT_VERSION · '+({running:'运行中',degraded:'透明路由异常',stopped:'已停止',uninstalled:'未安装'}[status]||'状态未知');
- byId('enabled').checked=c.enabled;byId('devices').value=(c.devices||[]).join('\n');
+ byId('listenPort').value=c.listen_port??6000;byId('enabled').checked=c.enabled;byId('devices').value=(c.devices||[]).join('\n');
  byId('rules').textContent='';byId('nodes').textContent='';(c.upstreams||[]).forEach(node);(c.rules||[]).forEach(rule);refresh();byId('fallback').value=targetId(c.default||'direct');
  byId('settings').inert=false;
 }
 byId('newNode').onclick=()=>node();byId('newRule').onclick=()=>rule();
 byId('settings').onsubmit=async e=>{e.preventDefault();if(byId('settings').inert)return;const submit=e.submitter||document.querySelector('button[type=submit]');submit.disabled=true;const out=byId('result');out.textContent='正在应用…';
  try{const config={enabled:byId('enabled').checked,devices:byId('devices').value.trim().split(/\s+/).filter(Boolean),upstreams:rows('nodes'),rules:rows('rules'),default:outbound(byId('fallback'))};
+ const port=byId('listenPort').valueAsNumber;
+ if(port===7893)throw Error('7893 已保留给透明代理，请选择其他端口。');
+ if(port!==6000)config.listen_port=port;
  const used=new Set(['direct','reject']);for(const n of config.upstreams){if(used.has(n.name))throw Error('节点名称重复或为保留名称：'+n.name);used.add(n.name);}
  byId('settings').inert=true;
  const r=await fetch('/axproxy-save.cgi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});
- if(!r.ok||!(await r.json()).ok)throw Error('应用失败，请检查节点、网段和端口。');try{await load();}catch{out.textContent='已保存，状态读取失败，请刷新页面。';return;}out.textContent='已应用';}
+ if(!r.ok||!(await r.json()).ok)throw Error('应用失败，请检查监听端口是否被占用，以及节点和分流配置。');try{await load();}catch{out.textContent='已保存，状态读取失败，请刷新页面。';return;}out.textContent='已应用';}
  catch(err){byId('settings').inert=false;out.textContent=err.message;}finally{submit.disabled=false;}};
 load().catch(()=>{byId('result').textContent='无法读取配置，请重新登录管理页。';});
 </script></html>

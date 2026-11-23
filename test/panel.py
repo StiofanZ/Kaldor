@@ -26,6 +26,10 @@ addEventListener('load',async ()=>{
   for(let i=0;document.querySelector('#settings').inert && i<100;i++)
    await new Promise(resolve=>setTimeout(resolve,10));
   assert(!document.querySelector('#settings').inert,'load: '+document.querySelector('#result').textContent);
+  const port=document.querySelector('#listenPort');
+  assert(port.value==='6000','default listen port');
+  port.value='65536';assert(!port.checkValidity(),'port upper bound');
+  port.value='16000';
   const [east,west]=document.querySelectorAll('#nodes fieldset');
   const fallback=document.querySelector('#fallback');
   const rule=document.querySelector('[data-key=outbound]');
@@ -50,6 +54,7 @@ addEventListener('load',async ()=>{
   protocol(second).value='tcp';click(second,'上移');
   document.querySelector('#settings').requestSubmit();
   await new Promise(resolve=>setTimeout(resolve,10));
+  assert(saved.listen_port===16000,'listen port missing from save');
   assert(saved.default==='west' && saved.rules[1].outbound==='renamed' && !('network' in saved.rules[1]) && saved.rules[0].network==='tcp' && saved.rules[0].outbound==='reject','wrong saved routing');
   assert(saved.upstreams[0].previous_name==='east' && !saved.upstreams[0].secret,'credential edit');
   const check=document.getElementById('checkRelease'),install=document.getElementById('installRelease');

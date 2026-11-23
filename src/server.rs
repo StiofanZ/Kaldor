@@ -3,7 +3,7 @@ mod sniff;
 mod udp;
 use crate::{
     VERSION,
-    config::Config,
+    config::{Config, TRANSPARENT_PORT},
     outbound::{Engine, Target},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -61,6 +61,7 @@ pub async fn run(cfg: Config, lan: &str, iface: &str, path: &str) -> Result<()> 
         !lan.is_unspecified() && !iface.is_empty(),
         "LAN address and interface required"
     );
+    let port = cfg.listen_port();
     let transparent = !cfg.devices.is_empty();
     let service = Service {
         engine: Arc::new(Engine::new(cfg)?),
@@ -68,16 +69,12 @@ pub async fn run(cfg: Config, lan: &str, iface: &str, path: &str) -> Result<()> 
         iface: iface.into(),
     };
     let mut workers = tokio::task::JoinSet::new();
-    for port in [7890, 7891, 7893] {
-        if port == 7893 && !transparent {
-            continue;
-        }
-        let l = service.listener(port, port == 7893)?;
-        let s = service.clone();
-        workers.spawn(async move { accept(l, s, port).await });
-    }
+    let manual = service.listener(port, false)?;
+    workers.spawn(accept(manual, service.clone(), false));
     if transparent {
-        let u = service.datagram(7893, true)?;
+        let tcp = service.listener(TRANSPARENT_PORT, true)?;
+        workers.spawn(accept(tcp, service.clone(), true));
+        let u = service.datagram(TRANSPARENT_PORT, true)?;
         let s = service.clone();
         workers.spawn(async move { udp::transparent(u, s).await });
     }
@@ -99,7 +96,7 @@ pub async fn run(cfg: Config, lan: &str, iface: &str, path: &str) -> Result<()> 
     std::fs::remove_file(path)?;
     result
 }
-async fn accept(listener: TcpListener, s: Service, port: u16) -> Result<()> {
+async fn accept(listener: TcpListener, s: Service, transparent: bool) -> Result<()> {
     let slots = Arc::new(Semaphore::new(256));
     loop {
         let (mut c, from) = listener.accept().await?;
@@ -109,26 +106,33 @@ async fn accept(listener: TcpListener, s: Service, port: u16) -> Result<()> {
         let s = s.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            match port {
-                7890 => http::serve(c, from, s).await,
-                7891 => socks(c, from, s).await,
-                _ => {
-                    let dest = c.local_addr()?;
-                    ensure!(
-                        dest != SocketAddr::from((s.lan, 7893)),
-                        "direct connection to transparent listener"
-                    );
-                    let (data, domain) = if s.engine.cfg.rules.iter().any(|r| r.needs_tcp_domain())
-                    {
-                        sniff::read(&mut c, dest.port()).await?
-                    } else {
-                        (vec![], String::new())
-                    };
-                    let target = Target::from_socket(dest);
-                    let mut up = s.engine.tcp(from.ip(), &target, &domain).await?;
-                    up.write_all(&data).await?;
-                    tokio::io::copy_bidirectional(&mut c, &mut up).await?;
-                    Ok(())
+            if transparent {
+                let dest = c.local_addr()?;
+                ensure!(
+                    dest != SocketAddr::from((s.lan, TRANSPARENT_PORT)),
+                    "direct connection to transparent listener"
+                );
+                let (data, domain) = if s.engine.cfg.rules.iter().any(|r| r.needs_tcp_domain()) {
+                    sniff::read(&mut c, dest.port()).await?
+                } else {
+                    (vec![], String::new())
+                };
+                let target = Target::from_socket(dest);
+                let mut up = s.engine.tcp(from.ip(), &target, &domain).await?;
+                up.write_all(&data).await?;
+                tokio::io::copy_bidirectional(&mut c, &mut up).await?;
+                Ok(())
+            } else {
+                // Peek preserves the SOCKS greeting or HTTP method for its protocol handler.
+                let mut first = [0];
+                ensure!(
+                    timeout(Duration::from_secs(12), c.peek(&mut first)).await?? == 1,
+                    "empty proxy request"
+                );
+                if first[0] == 5 {
+                    socks(c, from, s).await
+                } else {
+                    http::serve(c, from, s).await
                 }
             }
         });

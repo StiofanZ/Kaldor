@@ -36,14 +36,14 @@ def test_startup(engine, loader, work):
     assert result.returncode == 0, result.stderr
     try:
         assert control("status").stdout.strip() == "running"
-        with socket.create_connection(("127.0.0.1", 7891), timeout=2) as conn:
+        with socket.create_connection(("127.0.0.1", 6000), timeout=2) as conn:
             conn.sendall(bytes.fromhex("050100"))
             assert conn.recv(2) == bytes.fromhex("0500")
     finally:
         assert control("stop").returncode == 0
 
     with socket.socket() as occupied:
-        occupied.bind(("127.0.0.1", 7891))
+        occupied.bind(("127.0.0.1", 6000))
         occupied.listen()
         result = control("start")
         assert result.returncode != 0
