@@ -6,11 +6,14 @@ import tempfile
 
 panel = (Path(__file__).resolve().parents[1] / "panel.html").read_text()
 mock = """<script>
-let saved;
+let saved,action,releasePhase="current";
 let config={default:'east',devices:[],upstreams:['east','west'].map(name=>({
  name,protocol:'anytls',server:name+'.test:443'})),rules:[{port:443,outbound:'east'},{network:'udp',outbound:'reject'}]};
 window.fetch=async (url,opts)=>{
- if(url.endsWith('save.cgi')){saved=JSON.parse(opts.body);return new Response('{"ok":true}');}
+ if(url.endsWith('page.cgi'))return new Response('<section id="release" data-installed="COMPONENT_VERSION" data-phase="'+releasePhase+'" data-version="0.4.0"></section>');
+ if(url.endsWith('save.cgi')){const body=JSON.parse(opts.body);
+ if(body.component_action){action=body;releasePhase=body.component_action==='check'?'available':'done';}else saved=body;
+ return new Response('{"ok":true}');}
  if(url.endsWith('status.cgi'))return new Response('running');
  return new Response(JSON.stringify(config));
 };
@@ -49,6 +52,12 @@ addEventListener('load',async ()=>{
   await new Promise(resolve=>setTimeout(resolve,10));
   assert(saved.default==='west' && saved.rules[1].outbound==='renamed' && !('network' in saved.rules[1]) && saved.rules[0].network==='tcp' && saved.rules[0].outbound==='reject','wrong saved routing');
   assert(saved.upstreams[0].previous_name==='east' && !saved.upstreams[0].secret,'credential edit');
+  const check=document.getElementById('checkRelease'),install=document.getElementById('installRelease');
+  await check.onclick();assert(action.component_action==='check'&&!install.hidden,'release check');
+  window.confirm=()=>false;await install.onclick();assert(action.component_action==='check','cancelled upgrade');
+  window.confirm=()=>true;await install.onclick();
+  assert(action.component_action==='upgrade'&&action.version==='0.4.0'&&install.hidden,'selected release upgrade');
+  assert(document.getElementById('releaseResult').textContent.includes('已完成'),'upgrade result');
   result.textContent='PANEL_PASS';
  } catch(err){result.textContent='PANEL_FAIL '+err;}
 });

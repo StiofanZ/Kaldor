@@ -41,6 +41,8 @@ awk 'NR!=1 || NF!=2 || length($2)!=64 || $2 ~ /[^0-9a-f]/ {bad=1} END{exit bad |
 read -r release digest < "$tmp/manifest"
 current=$(installed)
 decision=$(compare "$current" "$release") || fail 'invalid stable version'
+[ -z "${KALDOR_EXPECTED_VERSION:-}" ] || [ "$release" = "$KALDOR_EXPECTED_VERSION" ] || fail 'release changed; check again'
+[ -z "${KALDOR_EXPECTED_VERSION:-}" ] || [ "$decision" != newer ] || fail 'a newer version is already installed'
 echo "installed=$current release=$release decision=$decision"
 [ "$action" = upgrade ] && [ "$decision" = upgrade ] || exit 0
 fetch "$base/download/v$release/kaldor" "$tmp/kaldor" 16777216
@@ -55,7 +57,13 @@ exec 8>"$run/release.lock"
 flock -x 8
 current=$(installed)
 decision=$(compare "$current" "$release") || fail 'invalid installed version'
+[ -z "${KALDOR_EXPECTED_VERSION:-}" ] || [ "$decision" != newer ] || fail 'a newer version was installed during download'
 if [ "$decision" != upgrade ]; then echo "installed=$current decision=$decision"; exit 0; fi
 "$ctl" install "$tmp/kaldor" "$digest" 8>&-
 [ "$(installed)" = "$release" ] || fail 'active version mismatch'
+read -r slot < "$root/active"
+case "$slot" in a|b) ;; *) fail 'invalid active slot';; esac
+if [ "$(compare "$release" 0.3.2)" != upgrade ]; then
+ "$root/$slot" prune-installed "$root" "$run" 8>&- || fail 'upgrade committed; previous slot retained pending cleanup'
+fi
 "$ctl" status 8>&-

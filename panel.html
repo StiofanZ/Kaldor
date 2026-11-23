@@ -12,6 +12,10 @@ input[type=checkbox]{width:auto}.toggle{display:inline-block}textarea{width:100%
 button[type=submit]{background:#106481}.status{color:#c5efff}.actions{justify-content:flex-start;margin-top:16px}small{color:#d4dde1}#result{white-space:pre-wrap}
 </style>
 <header><h1>Kaldor 网络代理</h1><output class="status" id="status"></output></header>
+<section id="release" data-phase="RELEASE_PHASE" data-version="RELEASE_VERSION" data-installed="COMPONENT_VERSION">
+<h2>组件更新</h2><button type="button" id="checkRelease">检查新版本</button>
+<button type="button" id="installRelease" hidden>升级组件</button>
+<output id="releaseResult" role="status"></output></section>
 <form id="settings" inert><fieldset><label class="toggle"><input id="enabled" type="checkbox"> 启用代理</label>
 <p>局域网 HTTP 端口 7890，SOCKS5 端口 7891。</p>
 <label for="devices">透明代理设备</label><textarea id="devices" placeholder="每行一个源 IPv4 网段，单台设备用 /32"></textarea>
@@ -23,6 +27,44 @@ button[type=submit]{background:#106481}.status{color:#c5efff}.actions{justify-co
 <script>
 'use strict';
 const byId=id=>document.getElementById(id);
+const release=byId('release'),checkRelease=byId('checkRelease'),installRelease=byId('installRelease'),releaseResult=byId('releaseResult');
+let pollTimer;
+function renderRelease(info){
+ clearTimeout(pollTimer);
+ const {phase,version,installed}=info;
+ Object.assign(release.dataset,{phase,version,installed});
+ const busy=['checking','upgrading'].includes(phase);
+ checkRelease.disabled=busy;installRelease.hidden=phase!=='available';
+ installRelease.disabled=busy;installRelease.textContent='升级到 v'+version;
+ const messages={checking:'正在检查稳定版…',upgrading:'正在下载、校验并安装…',
+  available:'发现稳定版 v'+version,current:'已是最新稳定版 v'+version,newer:'已安装版本高于稳定版 v'+version,
+  done:'已完成升级到 v'+version,failed:'操作未完成，请重新检查版本。'};
+ releaseResult.textContent=messages[phase]||'';
+ if(busy)pollTimer=setTimeout(refreshRelease,1500);
+}
+async function refreshRelease(){
+ try{
+  const r=await fetch('/axproxy-page.cgi',{cache:'no-store'});
+  if(!r.ok)throw Error();
+  const next=new DOMParser().parseFromString(await r.text(),'text/html').getElementById('release');
+  if(!next)throw Error();
+  if(next.dataset.installed!==release.dataset.installed){location.reload();return;}
+  renderRelease(next.dataset);
+ }catch{releaseResult.textContent='暂时无法读取更新状态，正在重试…';pollTimer=setTimeout(refreshRelease,3000);}
+}
+async function releaseAction(action){
+ const version=release.dataset.version;
+ if(action==='upgrade'&&!confirm('升级到 v'+version+'？代理会短暂重连，成功后会删除旧版本。'))return;
+ clearTimeout(pollTimer);checkRelease.disabled=true;installRelease.disabled=true;
+ try{
+  const body={component_action:action};if(action==='upgrade')body.version=version;
+  const r=await fetch('/axproxy-save.cgi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok||!(await r.json()).ok)throw Error();
+  await refreshRelease();
+ }catch{await refreshRelease();if(!checkRelease.disabled)releaseResult.textContent='请求未完成，请重新检查版本。';}
+}
+checkRelease.onclick=()=>releaseAction('check');installRelease.onclick=()=>releaseAction('upgrade');
+renderRelease(release.dataset);
 function button(txt,fn){const b=document.createElement('button');b.type='button';b.textContent=txt;b.onclick=fn;return b;}
 function choices(sel,values,current){sel.textContent='';for(const value of values){const o=document.createElement('option');o.value=value;o.textContent=value;sel.append(o);}sel.value=current;}
 function field(box,key,title,value,opts){

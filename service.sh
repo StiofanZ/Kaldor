@@ -121,6 +121,8 @@ launch() {
 }
 case "$1" in
  configure)
+  request=$("$bin" release-request "$2" "$run" 9>&-) || exit 1
+  [ "$request" != queued ] || exit 0
   "$bin" merge "$2" "$cfg" > "$root/config.new" || { rm -f "$root/config.new"; exit 1; }
   stop
   if launch "$bin" "$root/config.new" && mv "$root/config.new" "$cfg"; then exit 0; fi
@@ -128,6 +130,16 @@ case "$1" in
  start)
   code=0
   stop && launch "$bin" "$cfg" || code=$?
+  if [ "$code" = 0 ] && [ "$bin" = "$root/candidate" ]; then
+   "$bin" mark-candidate "$root" || code=$?
+  fi
+  if [ "$code" = 0 ] && [ -e "$root/prune.pending" ]; then
+   # Pin the candidate inode before the immutable firmware loader renames it.
+   # Its cleanup worker waits for the install transaction to release fd 9.
+   exec 4<"$bin"
+   /proc/self/fd/4 prune-installed "$root" "$run" 9>&- </dev/null >>"$run/service.log" 2>&1 &
+   exec 4<&-
+  fi
   logger -t kaldor "component start: status=$code" || :
   exit "$code";;
  stop) stop;;

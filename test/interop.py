@@ -245,15 +245,10 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     assert (root/"slots/active").read_text().strip()=="b" and command(root/"slots/b","version")==command(upgrade,"version")
     assert control("status")=="running" and before==(root/"slots/config.json").read_bytes()
     assert get(18480,"--noproxy","*")=="198.51.100.1"
-    # Real versions share a config: restart the Rust candidate from the prior slot.
-    control("rollback")
-    assert (root/"slots/active").read_text().strip()=="a"
-    assert control("status")=="running" and before==(root/"slots/config.json").read_bytes()
-    assert get(18480,"--noproxy","*")=="198.51.100.1"
-    control("rollback")
-    assert command(root/"slots/b","version")==command(upgrade,"version")
+    # Actual upgrade from a prior release. Only the active program and shared config survive.
     control("install",engine,checksum)
     assert (root/"slots/active").read_text().strip()=="a"
+    wait(lambda: not (root/"slots/b").exists())
     assert control("status")=="running" and before==(root/"slots/config.json").read_bytes()
     assert get(18480,"--noproxy","*")=="198.51.100.1"
     control("firewall")
@@ -265,7 +260,7 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     control("stop")
     assert "AXPROXY_LAN" not in command("iptables","-t","mangle","-S")
     assert "10891:" not in command("ip","rule","show")
-    print("install, upgrade, checksum rejection, rollback, firewall cleanup PASS")
+    print("install, upgrade, checksum rejection, old program cleanup, firewall cleanup PASS")
 
 if __name__=="__main__":
     if sys.argv[1:]==["origin"]:origin()

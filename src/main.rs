@@ -1,5 +1,7 @@
 mod config;
 mod outbound;
+mod release;
+use std::path::Path;
 #[cfg(target_os = "linux")]
 mod server;
 use anyhow::{Context, Result, bail, ensure};
@@ -26,11 +28,19 @@ async fn execute() -> Result<()> {
             return Ok(());
         }
         "page" => {
-            print!(
-                "{}",
-                include_str!("../panel.html").replace("COMPONENT_VERSION", VERSION)
-            );
+            let dir = std::env::var("AXPROXY_RUN").unwrap_or_else(|_| "/tmp/axproxy".into());
+            print!("{}", release::page(Path::new(&dir))?);
             return Ok(());
+        }
+        "release-request" if args.len() == 3 => {
+            return release::submit(Path::new(&args[1]), Path::new(&args[2]));
+        }
+        "release-worker" if args.len() == 4 => {
+            return release::worker(Path::new(&args[1]), &args[2], &args[3]);
+        }
+        "mark-candidate" if args.len() == 2 => return release::mark_candidate(Path::new(&args[1])),
+        "prune-installed" if args.len() == 3 => {
+            return release::prune(Path::new(&args[1]), Path::new(&args[2]));
         }
         _ => {}
     }
