@@ -94,7 +94,7 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     def control(*args):
         return command(ctl,*args,env=env)
     command("openssl","req","-x509","-newkey","rsa:2048","-nodes","-days","1",
-            "-subj","/CN=peer.test","-addext","subjectAltName=DNS:peer.test","-keyout",root/"key","-out",root/"ca.pem")
+            "-subj","/CN=peer.test","-addext","subjectAltName=DNS:peer.test,IP:127.0.0.1","-keyout",root/"key","-out",root/"ca.pem")
     secret=secrets.token_hex(24)
     sing_conf={"log":{"level":"error"},"inbounds":[
         {"type":"anytls","tag":"any","listen":"127.0.0.1","listen_port":19443,
@@ -145,6 +145,8 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
 
     def get(port,*flags):
         return command(*client,"curl","-fsS","--max-time","8",*flags,f"http://198.51.100.2:{port}/")
+    import rules as rule_files
+    rule_files.verify(root, env, conf, control, get)
     import dns
     dns.verify(root, command, spawn, wait, client, wan, sing, conf, control, activity, peers[0], sing_conf)
     import ipv6

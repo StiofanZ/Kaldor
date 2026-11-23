@@ -85,8 +85,8 @@ output{overflow-wrap:anywhere}
 <section class="card" id="policyPanel" data-config inert role="tabpanel" aria-labelledby="tab-policies" hidden>
 <div class="section-head"><button type="button" id="newPolicy">添加策略</button></div>
 <div id="policies"></div><p class="hint" id="noPolicies">尚未添加策略。可在全局代理或分流规则中选择策略。</p></section>
-<section class="card" id="rulePanel" data-config inert role="tabpanel" aria-labelledby="tab-rules" hidden><div class="section-head"><button type="button" id="newRule">添加规则</button></div>
-<p class="hint">按从上到下的顺序匹配，首条满足全部条件的规则生效。未命中时使用下方的兜底出口。</p><label>规则兜底出口<select id="fallback"></select></label><div id="rules"></div></section>
+<section class="card" id="rulePanel" data-config inert role="tabpanel" aria-labelledby="tab-rules" hidden><div class="section-head"><button type="button" id="newRule">添加条件规则</button><button type="button" id="newStandard">添加标准规则</button><button type="button" id="newRemote">引用远程规则集</button></div>
+<p class="hint">按从上到下的顺序匹配，首条满足全部条件的规则生效。未命中时使用下方的兜底出口。</p><label>规则兜底出口<select id="fallback"></select></label><details><summary>导入本地规则文件</summary><div class="fields"><label>文件未指定出口时使用<select id="importTarget"></select></label><label>选择 UTF-8 文件<input id="importFile" type="file" accept=".list,.txt,.yml,.yaml,text/plain"></label></div><small>每行一条规则，也支持 rules 或 payload 的 YAML 列表。规则将依次追加到末尾。</small></details><div id="rules"></div></section>
 <div class="actions" data-config inert><button type="submit">保存并应用</button><output role="status" id="result"></output></div></form>
 <section class="card" id="connections" role="tabpanel" aria-labelledby="tab-connections" hidden>
 <div class="activity-head"><output role="status"></output><button type="button">刷新连接</button></div>
@@ -242,7 +242,9 @@ byId('outboundMode').onchange=()=>{
 };
 function refresh(){
  for(const box of byId('policies').children)refreshMembers(box);
+ populate(byId('importTarget'),byId('importTarget').value||'direct');
  for(const select of selectors())populate(select,select.value||'direct');
+ if(!byId('importTarget').value)byId('importTarget').value='direct';
  const global=byId('globalOutbound'), selected=global.value;
  global.replaceChildren(new Option('请选择节点或策略',''),...targets().slice(2).map(([id,label])=>new Option(label,id)));
  global.value=selected;
@@ -347,12 +349,87 @@ function policyRows(){
   return row;
  });
 }
+const standardKinds=new Set(['DOMAIN','DOMAIN-SUFFIX','DOMAIN-KEYWORD','IP-CIDR','IP-CIDR6','SRC-IP-CIDR','DST-PORT','NETWORK','MATCH']);
+function readStandard(line,defaultTarget){
+ const parts=line.split(',').map(v=>v.trim());
+ let kind=parts.shift().toUpperCase();
+ if(!standardKinds.has(kind) && !parts.length){
+  const value=line.trim();
+  kind=value.includes('/')?'IP-CIDR':value.startsWith('+.')?'DOMAIN-SUFFIX':'DOMAIN';
+  parts.push(value.replace(/^\+\./,''));
+ }
+ if(!standardKinds.has(kind))throw Error('不支持此规则类型');
+ const condition=[kind], cidr=kind.includes('CIDR');
+ if(kind!=='MATCH'){
+  const v=parts.shift();
+  if(!v)throw Error('缺少匹配值');
+  if(kind==='NETWORK' && !/^(tcp|udp)$/i.test(v))throw Error('协议应为 TCP 或 UDP');
+  if(kind==='DST-PORT' && (!/^\d+$/.test(v)||+v<1||+v>65535))throw Error('端口应为 1–65535');
+  if(kind==='DOMAIN'||kind==='DOMAIN-SUFFIX'){
+   const name=v.replace(/\.$/,'');
+   if(name.length>253||!name.split('.').every(l=>/^[\w-]{1,63}$/.test(l)))throw Error('域名格式无效');
+  }
+  if(kind==='DOMAIN-KEYWORD' && !/^[\x21-\x7e]{1,253}$/.test(v))throw Error('域名关键词无效');
+  if(cidr){
+   const [ip,bits,...extra]=v.split('/'),v6=ip.includes(':');
+   if(extra.length||!/^\d+$/.test(bits||'')||+bits>(v6?128:32)||(!v6 && kind==='IP-CIDR6'))throw Error('CIDR 格式无效');
+   if(v6){try{new URL('http://['+ip+']/');}catch{throw Error('IPv6 地址无效');}}
+   else if(ip.split('.').length!==4||!ip.split('.').every(n=>/^(0|[1-9]\d{0,2})$/.test(n)&&+n<=255))throw Error('IPv4 地址无效');
+  }
+  condition.push(v);
+ }
+ if(cidr && kind!=='SRC-IP-CIDR' && parts.at(-1)==='no-resolve'){parts.pop();condition.push('no-resolve');}
+ if(parts.length>1||parts.includes(''))throw Error('规则参数过多或有空值');
+ let target=parts.length?parts[0]:defaultTarget;
+ if(['DIRECT','REJECT'].includes(target))target=target.toLowerCase();
+ targetId(target);
+ return {standard:condition.join(','),outbound:target};
+}
+function stageRuleFile(text){
+ const prepared=[],lines=text.replace(/^\uFEFF/,'').split(/\r?\n/);
+ let header='';
+ for(let i=0;i<lines.length;i++){
+  let value=lines[i].replace(/\s+#.*$/,'').trim();
+  if(!value||value.startsWith('#'))continue;
+  if(!header && !prepared.length && ['payload:','rules:'].includes(value)){header=value;continue;}
+  try{
+   if(header){if(!value.startsWith('- '))throw Error('应为 YAML 列表项');value=value.slice(2).trim();}
+   if(/^['"]/.test(value)){if(value.length<2||value.at(-1)!==value[0])throw Error('引号未闭合');value=value.slice(1,-1);}
+   prepared.push(readStandard(value,outbound(byId('importTarget'))));
+   if(prepared.length+byId('rules').childElementCount>512)throw Error('最多可编辑 512 条规则，可使用远程规则集');
+  }catch(e){throw Error('第 '+(i+1)+' 行：'+e.message);}
+ }
+ if(!prepared.length)throw Error('文件没有规则');
+ prepared.forEach(rule);
+ byId('result').textContent='已添加 '+prepared.length+' 条，保存并应用后生效。';
+}
+byId('importFile').onchange=async e=>{
+ const file=e.target.files[0];if(!file)return;
+ try{
+  if(file.size>65536)throw Error('本地文件超过 64 KiB，请使用远程规则集。');
+  stageRuleFile(new TextDecoder('utf-8',{fatal:true}).decode(await file.arrayBuffer()));
+ }catch(err){byId('result').textContent=err.message;}
+ finally{e.target.value='';}
+};
+
 function rule(data={}){
- const box=entry(byId('rules'),'匹配条件');field(box,'source','源 CIDR',data.source);field(box,'destination','目的 CIDR',data.destination);
+ const remote='rule_url' in data, standard='standard' in data;
+ const box=entry(byId('rules'),remote?'远程规则集':standard?'标准规则':'匹配条件');
+ if(remote){
+  const url=field(box,'rule_url','规则文件 HTTPS 地址',data.rule_url,'url');url.required=true;url.placeholder='https://example.org/rules.list';
+  box.dataset.savedUrl=data.rule_url;box.dataset.digest=data.rule_digest||'';
+  const reload=button('重新下载',()=>{box.dataset.digest='';byId('result').textContent='保存并应用时将重新下载规则文件。';});
+  box.querySelector('.row-tools').prepend(reload);
+ }else if(standard){
+  const text=field(box,'standard','匹配表达式',data.standard);text.required=true;text.placeholder='DOMAIN-SUFFIX,example.org';
+  text.onchange=()=>{try{const r=readStandard(text.value,outbound(box.querySelector('[data-key=outbound]')));text.value=r.standard;box.querySelector('[data-key=outbound]').value=targetId(r.outbound);}catch(e){byId('result').textContent=e.message;}};
+ }else{
+ field(box,'source','源 CIDR',data.source);field(box,'destination','目的 CIDR',data.destination);
  const network=field(box,'network','传输协议','',[]);
  network.replaceChildren(new Option('TCP 和 UDP',''),new Option('TCP','tcp'),new Option('UDP','udp'));network.value=data.network||'';
  const suffix=field(box,'domain_suffix','域名后缀',data.domain_suffix);suffix.pattern='([^.]+\\.)*[^.]+\\.?';suffix.title='填写域名或其后缀，例如 example.org';
  const port=field(box,'port','目的端口',data.port,'number');port.min=1;port.max=65535;
+ }
  const select=field(box,'outbound','出口','',[]);populate(select,targetId(data.outbound||'direct'));
  const tools=box.querySelector('.row-tools');
  tools.prepend(button('上移',()=>{if(box.previousElementSibling)box.previousElementSibling.before(box);}),
@@ -367,6 +444,8 @@ function rows(id){
    const v=k==='outbound'?outbound(e):(k==='secret'?e.value:e.value.trim());
    if(v)obj[k]=k==='port'?Number(v):v;
   }
+  if(obj.standard)return readStandard(obj.standard,obj.outbound);
+  if(obj.rule_url && obj.rule_url===box.dataset.savedUrl && box.dataset.digest)obj.rule_digest=box.dataset.digest;
   return obj;
  });
 }
@@ -384,6 +463,7 @@ async function load(){
  updateMode();lockConfig(false);
 }
 byId('newPolicy').onclick=()=>policy();byId('newNode').onclick=()=>node();byId('newRule').onclick=()=>rule();
+byId('newStandard').onclick=()=>rule({standard:''});byId('newRemote').onclick=()=>rule({rule_url:''});
 byId('settings').onsubmit=async e=>{
  e.preventDefault();
  const form=e.currentTarget;
@@ -405,9 +485,11 @@ byId('settings').onsubmit=async e=>{
  if(port!==6000)config.listen_port=port;
  const used=new Set(['direct','reject']);for(const n of config.upstreams){if(used.has(n.name)){selectTab(byId('tab-nodes'));throw Error('节点名称重复或为保留名称：'+n.name);}used.add(n.name);}
  for(const p of policies){if(used.has(p.name)){selectTab(byId('tab-policies'));throw Error('策略与节点名称必须唯一：'+p.name);}used.add(p.name);}
+ const body=JSON.stringify(config);
+ if(config.rules.length>512 || new Blob([body]).size>65536)throw Error('配置超过 512 条或 64 KiB，请使用远程规则集。');
  lockConfig(true);
- const r=await fetch('/axproxy-save.cgi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});
- if(!r.ok||!(await r.json()).ok)throw Error('应用失败，请检查监听端口是否被占用，以及节点和分流配置。');try{await load();}catch{out.textContent='已保存，状态读取失败，请刷新页面。';return;}out.textContent='已应用';}
+ const r=await fetch('/axproxy-save.cgi',{method:'POST',headers:{'Content-Type':'application/json'},body});
+ if(!r.ok||!(await r.json()).ok)throw Error(config.rules.some(r=>r.rule_url)?'应用失败。请检查远程文件能否通过 HTTPS 获取、是否为支持的规则格式，以及出口配置。':'应用失败，请检查监听端口是否被占用，以及节点和分流配置。');try{await load();}catch{out.textContent='已保存，状态读取失败，请刷新页面。';return;}out.textContent='已应用';}
  catch(err){lockConfig(false);out.textContent=err.message;}finally{submit.disabled=false;}};
 load().catch(()=>{byId('result').textContent='无法读取配置，请重新登录管理页。';});
 </script></html>

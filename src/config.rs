@@ -1,3 +1,4 @@
+mod rules;
 use anyhow::{Context, Result, ensure};
 use ipnet::IpNet;
 use meow_common::Network;
@@ -34,6 +35,8 @@ pub struct Config {
     pub default: String,
     #[serde(deserialize_with = "list")]
     pub rules: Vec<Rule>,
+    #[serde(skip)]
+    effective_rules: Option<Vec<Rule>>,
     #[serde(deserialize_with = "list")]
     pub upstreams: Vec<Upstream>,
     #[serde(deserialize_with = "list", skip_serializing_if = "Vec::is_empty")]
@@ -75,7 +78,7 @@ fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
 }
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Rule {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,6 +87,16 @@ pub struct Rule {
     destination: Option<IpNet>,
     #[serde(skip_serializing_if = "String::is_empty")]
     domain_suffix: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    standard: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    rule_url: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    rule_digest: String,
+    #[serde(skip)]
+    domain: String,
+    #[serde(skip)]
+    domain_keyword: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     network: Option<Network>,
     port: u16,
@@ -91,9 +104,22 @@ pub struct Rule {
 }
 impl Rule {
     pub fn needs_tcp_domain(&self) -> bool {
-        !self.domain_suffix.is_empty() && self.network != Some(Network::Udp)
+        self.has_domain() && self.network != Some(Network::Udp)
+    }
+    fn has_domain(&self) -> bool {
+        !(self.domain_suffix.is_empty() && self.domain.is_empty() && self.domain_keyword.is_empty())
     }
     fn matches_domain(&self, domain: &str) -> bool {
+        if !self.domain.is_empty() {
+            return domain.eq_ignore_ascii_case(self.domain.trim_end_matches('.'));
+        }
+        if !self.domain_keyword.is_empty() {
+            let keyword = self.domain_keyword.as_bytes();
+            return domain
+                .as_bytes()
+                .windows(keyword.len())
+                .any(|s| s.eq_ignore_ascii_case(keyword));
+        }
         if self.domain_suffix.is_empty() {
             return true;
         }
@@ -205,12 +231,21 @@ impl Config {
             self.outbound_mode != OutboundMode::Global || self.global_outbound.is_some(),
             "select a global proxy outbound"
         );
+        ensure!(
+            self.rules.iter().filter(|r| !r.rule_url.is_empty()).count() <= 8,
+            "at most eight remote rule sets"
+        );
         for (index, rule) in self.rules.iter().enumerate() {
-            if !rule.domain_suffix.is_empty() {
-                let suffix = rule
-                    .domain_suffix
-                    .strip_suffix('.')
-                    .unwrap_or(&rule.domain_suffix);
+            let patterns = [&rule.domain, &rule.domain_suffix, &rule.domain_keyword];
+            ensure!(
+                patterns.iter().filter(|s| !s.is_empty()).count() <= 1,
+                "multiple domain conditions"
+            );
+            for pattern in [&rule.domain, &rule.domain_suffix]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+            {
+                let suffix = pattern.strip_suffix('.').unwrap_or(pattern);
                 ensure!(
                     suffix.split('.').all(|label| !label.is_empty()),
                     "rule {}: empty domain label",
@@ -221,26 +256,28 @@ impl Config {
                 names.contains(rule.outbound.as_str()),
                 "unknown rule outbound"
             );
-            ensure!(
-                rule.source.is_some()
-                    || rule.destination.is_some()
-                    || rule.network.is_some()
-                    || rule.port != 0
-                    || !rule.domain_suffix.is_empty(),
-                "empty rule"
-            );
+            let has_condition = rule.source.is_some()
+                || rule.destination.is_some()
+                || rule.network.is_some()
+                || rule.port != 0
+                || rule.has_domain();
+            rule.validate_source(has_condition)
+                .with_context(|| format!("rule {}", index + 1))?;
         }
         Ok(())
+    }
+    pub fn routing_rules(&self) -> &[Rule] {
+        self.effective_rules.as_deref().unwrap_or(&self.rules)
     }
     pub fn has_ipv4_source_rules(&self) -> bool {
         self.outbound_mode == OutboundMode::Rules
             && self
-                .rules
+                .routing_rules()
                 .iter()
                 .any(|r| matches!(r.source, Some(IpNet::V4(_))))
     }
     pub fn matches_reserved_source(&self, ip: std::net::Ipv4Addr) -> bool {
-        self.rules
+        self.routing_rules()
             .iter()
             .any(|r| r.source.is_some_and(|net| net.contains(&IpAddr::V4(ip))))
     }
@@ -269,7 +306,7 @@ impl Config {
         } else {
             domain
         };
-        self.rules
+        self.routing_rules()
             .iter()
             .find(|r| {
                 r.network.is_none_or(|n| n == network)

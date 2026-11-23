@@ -190,6 +190,7 @@ case "$1" in
  configure)
   request=$("$bin" release-request "$2" "$run" 9>&-) || exit 1
   [ "$request" != queued ] || exit 0
+  trap '"$bin" prune-rule-files "$cfg" || logger -t kaldor "rule file cleanup failed"' EXIT
   "$bin" merge "$2" "$cfg" > "$root/config.new" || { rm -f "$root/config.new"; exit 1; }
   stop
   if launch "$bin" "$root/config.new" && mv "$root/config.new" "$cfg"; then exit 0; fi

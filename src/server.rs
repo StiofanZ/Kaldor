@@ -146,7 +146,11 @@ async fn accept(listener: TcpListener, s: Service, dns: Option<Arc<dns::Resolver
                 }
                 let domain_routing = s.engine.cfg.outbound_mode
                     == crate::config::OutboundMode::Rules
-                    && s.engine.cfg.rules.iter().any(|r| r.needs_tcp_domain());
+                    && s.engine
+                        .cfg
+                        .routing_rules()
+                        .iter()
+                        .any(|r| r.needs_tcp_domain());
                 let (data, domain) = if domain_routing {
                     sniff::read(&mut c, dest.port()).await?
                 } else {

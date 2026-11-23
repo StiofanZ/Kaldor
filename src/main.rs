@@ -53,7 +53,11 @@ async fn execute() -> Result<()> {
         _ => {}
     }
     let mut cfg = Config::read(args.get(1).context("configuration required")?)?;
+    let dir = Path::new(&args[1])
+        .parent()
+        .context("missing configuration directory")?;
     match cmd {
+        "prune-rule-files" => cfg.prune_rule_files(dir)?,
         "view" => {
             for u in &mut cfg.upstreams {
                 u.secret.clear()
@@ -61,11 +65,16 @@ async fn execute() -> Result<()> {
             println!("{}", serde_json::to_string(&cfg)?);
         }
         "merge" => {
-            cfg.merge(&Config::read(
-                args.get(2).context("previous configuration required")?,
-            )?)?;
+            let old = Config::read(args.get(2).context("previous configuration required")?)?;
+            cfg.merge(&old)?;
             cfg.validate()?;
-            println!("{}", serde_json::to_string(&cfg)?);
+            let dir = Path::new(&args[2])
+                .parent()
+                .context("missing configuration directory")?;
+            cfg.prepare_rule_files(&old, dir)?;
+            let json = serde_json::to_string(&cfg)?;
+            ensure!(json.len() < 65536, "saved configuration exceeds size limit");
+            println!("{json}");
         }
         "check" => cfg.validate()?,
         "enabled" => {
@@ -89,6 +98,9 @@ async fn execute() -> Result<()> {
                 cfg.enabled && args.len() == 5,
                 "enabled configuration, LAN, interface and readiness path required"
             );
+            if cfg.outbound_mode == OutboundMode::Rules {
+                cfg.expand_rules(dir)?;
+            }
             server::run(cfg, &args[2], &args[3], &args[4]).await?;
         }
         _ => bail!("unsupported command"),
