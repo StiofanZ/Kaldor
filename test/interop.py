@@ -89,7 +89,7 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     env = os.environ.copy()
     env.update(AXPROXY_HOME=str(root/"slots"), AXPROXY_RUN=str(root/"runtime"),
                SSL_CERT_FILE=str(root/"ca.pem"), PATH=str(root)+":"+env["PATH"])
-    (root/"nvram").write_text('#!/bin/sh\ncase "$2" in lan_ipaddr) echo 192.0.2.1;; lan_ifname) echo lan0;; *) exit 1;; esac\n')
+    (root/"nvram").write_text('#!/bin/sh\ncase "$2" in lan_ipaddr) echo 192.0.2.1;; lan_ifname) echo lan0;; dhcp_static_x) echo 1;; dhcp_staticlist) cat "$AXPROXY_RUN/reservations" 2>/dev/null || :;; *) exit 1;; esac\n')
     (root/"nvram").chmod(0o700)
     def control(*args):
         return command(ctl,*args,env=env)
@@ -147,6 +147,8 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
         return command(*client,"curl","-fsS","--max-time","8",*flags,f"http://198.51.100.2:{port}/")
     import dns
     dns.verify(root, command, spawn, wait, client, wan, sing, conf, control, activity, peers[0], sing_conf)
+    import ipv6
+    ipv6.verify(root, command, spawn, wait, client, wan, sing, conf, control, activity, peers[0])
     for p in peers:
         cfg={"enabled":True,"devices":["192.0.2.2/32"],"upstreams":[dict(name="node",**p)],"default":"node",
              "rules":[{"port":18481,"outbound":"reject"},{"domain_suffix":"blocked.example","outbound":"reject"}]}

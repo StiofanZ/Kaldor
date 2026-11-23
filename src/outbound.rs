@@ -181,10 +181,11 @@ impl Engine {
         t: &Target,
         domain: &str,
         ingress: &'static str,
+        reserved: Option<std::net::Ipv4Addr>,
     ) -> Result<(Connection, crate::activity::Session)> {
         let outbound = self
             .cfg
-            .route(src.ip(), t.addr(), t.port, domain, Network::Tcp);
+            .route(src.ip(), reserved, t.addr(), t.port, domain, Network::Tcp);
         let result = self.dial_tcp(src.ip(), t, outbound).await;
         self.activity.record(
             crate::activity::Access {
@@ -220,10 +221,11 @@ impl Engine {
         src: SocketAddr,
         t: &Target,
         ingress: &'static str,
+        reserved: Option<std::net::Ipv4Addr>,
     ) -> Result<(Packets, crate::activity::Session)> {
         let outbound = self
             .cfg
-            .route(src.ip(), t.addr(), t.port, &t.host, Network::Udp);
+            .route(src.ip(), reserved, t.addr(), t.port, &t.host, Network::Udp);
         let result = self.dial_udp(src.ip(), t, outbound).await;
         self.activity.record(
             crate::activity::Access {

@@ -1,14 +1,22 @@
 use super::*;
 use std::{collections::HashMap, io, mem, os::fd::AsRawFd};
 use tokio::{io::Interest, sync::mpsc, task::JoinSet};
-pub(super) fn original_address(sock: &Socket) -> io::Result<()> {
+pub(super) fn original_address(sock: &Socket, ipv6: bool) -> io::Result<()> {
     let flag: libc::c_int = 1;
     // setsockopt copies this integer before returning.
     let rc = unsafe {
         libc::setsockopt(
             sock.as_raw_fd(),
-            libc::IPPROTO_IP,
-            libc::IP_RECVORIGDSTADDR,
+            if ipv6 {
+                libc::IPPROTO_IPV6
+            } else {
+                libc::IPPROTO_IP
+            },
+            if ipv6 {
+                libc::IPV6_RECVORIGDSTADDR
+            } else {
+                libc::IP_RECVORIGDSTADDR
+            },
             (&raw const flag).cast(),
             mem::size_of_val(&flag) as _,
         )
@@ -30,7 +38,7 @@ fn receive(sock: &UdpSocket, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, S
     // The ancillary buffer is aligned for cmsghdr. Source, iovec and control
     // storage stay live for recvmsg and the subsequent bounded header walk.
     unsafe {
-        let mut src: libc::sockaddr_in = mem::zeroed();
+        let mut src: libc::sockaddr_storage = mem::zeroed();
         let mut control = [0usize; 16];
         let mut iov = libc::iovec {
             iov_base: buf.as_mut_ptr().cast(),
@@ -49,7 +57,8 @@ fn receive(sock: &UdpSocket, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, S
         }
         let mut hdr = libc::CMSG_FIRSTHDR(&msg);
         while !hdr.is_null() {
-            if (*hdr).cmsg_level == libc::IPPROTO_IP
+            if src.ss_family as i32 == libc::AF_INET
+                && (*hdr).cmsg_level == libc::IPPROTO_IP
                 && (*hdr).cmsg_type == libc::IP_ORIGDSTADDR
                 && (*hdr).cmsg_len as usize
                     >= libc::CMSG_LEN(mem::size_of::<libc::sockaddr_in>() as _) as usize
@@ -57,7 +66,35 @@ fn receive(sock: &UdpSocket, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, S
                 let dst = libc::CMSG_DATA(hdr)
                     .cast::<libc::sockaddr_in>()
                     .read_unaligned();
-                return Ok((n as usize, address(src), address(dst)));
+                return Ok((
+                    n as usize,
+                    address((&raw const src).cast::<libc::sockaddr_in>().read()),
+                    address(dst),
+                ));
+            }
+            if src.ss_family as i32 == libc::AF_INET6
+                && (*hdr).cmsg_level == libc::IPPROTO_IPV6
+                && (*hdr).cmsg_type == libc::IPV6_ORIGDSTADDR
+                && (*hdr).cmsg_len as usize
+                    >= libc::CMSG_LEN(mem::size_of::<libc::sockaddr_in6>() as _) as usize
+            {
+                let to_addr = |a: libc::sockaddr_in6| {
+                    SocketAddr::V6(std::net::SocketAddrV6::new(
+                        a.sin6_addr.s6_addr.into(),
+                        u16::from_be(a.sin6_port),
+                        0,
+                        a.sin6_scope_id,
+                    ))
+                };
+                return Ok((
+                    n as usize,
+                    to_addr((&raw const src).cast::<libc::sockaddr_in6>().read()),
+                    to_addr(
+                        libc::CMSG_DATA(hdr)
+                            .cast::<libc::sockaddr_in6>()
+                            .read_unaligned(),
+                    ),
+                ));
             }
             hdr = libc::CMSG_NXTHDR(&msg, hdr);
         }
@@ -96,12 +133,21 @@ impl Flows {
         if self.senders.len() >= 256 {
             return;
         }
+        let permit = if self.manual.is_none() {
+            let Ok(permit) = self.service.udp_slots.clone().try_acquire_owned() else {
+                return;
+            };
+            Some(permit)
+        } else {
+            None
+        };
         let (tx, rx) = mpsc::channel::<Vec<u8>>(16);
         let _ = tx.try_send(data.to_vec());
         self.senders.insert(key, tx);
         let service = self.service.clone();
         let manual = self.manual.clone();
         self.workers.spawn(async move {
+            let _permit = permit;
             let _ = forward(service, manual, src, t, rx).await;
         });
     }
@@ -120,7 +166,10 @@ async fn forward(
         "透明代理"
     };
     let mut probe = manual.is_none().then(super::quic::Probe::default);
-    let (upstream, session) = service.engine.udp(src, &target, ingress).await?;
+    let (upstream, session) = service
+        .engine
+        .udp(src, &target, ingress, service.reserved)
+        .await?;
     let (socket, prefix) = match manual {
         Some(socket) => {
             let mut prefix = vec![0; 3];
@@ -172,9 +221,14 @@ pub(super) async fn transparent(sock: UdpSocket, s: Service) -> Result<()> {
     loop {
         sock.readable().await?;
         match sock.try_io(Interest::READABLE, || receive(&sock, &mut data)) {
+            Ok((n, src, dst)) if dst.is_ipv6() && dst.port() == 53 => {
+                if let Some(resolver) = &s.dns {
+                    resolver.udp(&s, Some(dst), &sock, src, &data[..n]);
+                }
+            }
             Ok((n, src, dst)) if dst == SocketAddr::from((s.lan, TRANSPARENT_PORT)) => {
                 if let Some(resolver) = s.device_dns(src) {
-                    resolver.udp(&s.engine, &sock, src, &data[..n]);
+                    resolver.udp(&s, None, &sock, src, &data[..n]);
                 }
             }
             Ok((n, src, dst)) => flows.feed(src, Target::from_socket(dst), &data[..n]),

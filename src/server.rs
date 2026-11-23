@@ -1,5 +1,6 @@
 mod dns;
 mod http;
+mod ipv6;
 mod quic;
 mod sniff;
 mod udp;
@@ -26,6 +27,9 @@ struct Service {
     engine: Arc<Engine>,
     lan: Ipv4Addr,
     iface: Arc<str>,
+    reserved: Option<Ipv4Addr>,
+    tcp_slots: Arc<Semaphore>,
+    udp_slots: Arc<Semaphore>,
     dns: Option<Arc<dns::Resolver>>,
 }
 impl Service {
@@ -44,11 +48,18 @@ impl Service {
         } else {
             (Type::STREAM, Protocol::TCP)
         };
-        let sock = Socket::new(Domain::IPV4, kind, Some(proto))?;
+        let sock = Socket::new(Domain::for_address(addr), kind, Some(proto))?;
+        if addr.is_ipv6() {
+            sock.set_only_v6(true)?;
+        }
         sock.set_reuse_address(true)?;
         sock.bind_device(Some(self.iface.as_bytes()))?;
         if transparent {
-            sock.set_ip_transparent_v4(true)?;
+            if addr.is_ipv6() {
+                sock.set_ip_transparent_v6(true)?;
+            } else {
+                sock.set_ip_transparent_v4(true)?;
+            }
         }
         sock.bind(&addr.into())?;
         sock.set_nonblocking(true)?;
@@ -62,7 +73,7 @@ impl Service {
     fn datagram(&self, port: u16, transparent: bool) -> Result<UdpSocket> {
         let s = self.socket(true, transparent, (self.lan, port).into())?;
         if transparent {
-            udp::original_address(&s)?;
+            udp::original_address(&s, false)?;
         }
         Ok(UdpSocket::from_std(s.into())?)
     }
@@ -83,6 +94,9 @@ pub async fn run(cfg: Config, lan: &str, iface: &str, path: &str) -> Result<()> 
         engine: Arc::new(Engine::new(cfg)?),
         lan,
         iface: iface.into(),
+        reserved: None,
+        tcp_slots: Arc::new(Semaphore::new(256)),
+        udp_slots: Arc::new(Semaphore::new(256)),
     };
     let mut workers = tokio::task::JoinSet::new();
     let manual = service.listener(port, false)?;
@@ -97,6 +111,9 @@ pub async fn run(cfg: Config, lan: &str, iface: &str, path: &str) -> Result<()> 
     let directory = std::path::Path::new(path)
         .parent()
         .context("missing runtime directory")?;
+    if transparent {
+        ipv6::start(&service, directory, &mut workers)?;
+    }
     let activity = service.engine.activity.clone();
     let socket = crate::activity::Activity::listener(directory)?;
     workers.spawn(activity.serve(socket));
@@ -119,7 +136,11 @@ pub async fn run(cfg: Config, lan: &str, iface: &str, path: &str) -> Result<()> 
     result
 }
 async fn accept(listener: TcpListener, s: Service, transparent: bool) -> Result<()> {
-    let slots = Arc::new(Semaphore::new(256));
+    let slots = if transparent {
+        s.tcp_slots.clone()
+    } else {
+        Arc::new(Semaphore::new(256))
+    };
     loop {
         let (mut c, from) = listener.accept().await?;
         let Ok(permit) = slots.clone().try_acquire_owned() else {
@@ -130,9 +151,17 @@ async fn accept(listener: TcpListener, s: Service, transparent: bool) -> Result<
             let _permit = permit;
             if transparent {
                 let dest = c.local_addr()?;
+                if dest.is_ipv6() && dest.port() == 53 {
+                    s.dns
+                        .as_ref()
+                        .context("missing DNS resolver")?
+                        .tcp(&s, from, &mut c)
+                        .await?;
+                    return Ok(());
+                }
                 if dest == SocketAddr::from((s.lan, TRANSPARENT_PORT)) {
                     if let Some(resolver) = s.device_dns(from) {
-                        resolver.tcp(&s.engine, from, &mut c).await?;
+                        resolver.tcp(&s, from, &mut c).await?;
                     }
                     return Ok(());
                 }
@@ -143,7 +172,10 @@ async fn accept(listener: TcpListener, s: Service, transparent: bool) -> Result<
                     (vec![], String::new())
                 };
                 let target = Target::from_socket(dest);
-                let (mut up, session) = s.engine.tcp(from, &target, &domain, "透明代理").await?;
+                let (mut up, session) = s
+                    .engine
+                    .tcp(from, &target, &domain, "透明代理", s.reserved)
+                    .await?;
                 if !domain_routing && sniff::supported(dest.port()) {
                     let (reader, writer) = c.split();
                     let mut observed = tokio::io::join(
@@ -222,7 +254,8 @@ async fn socks(mut c: TcpStream, src: SocketAddr, s: Service) -> Result<()> {
     .await??;
     match cmd {
         1 => {
-            let Ok((mut up, _session)) = s.engine.tcp(src, &t, &t.host, "SOCKS5").await else {
+            let Ok((mut up, _session)) = s.engine.tcp(src, &t, &t.host, "SOCKS5", None).await
+            else {
                 return reply(&mut c, 1, None).await;
             };
             reply(&mut c, 0, None).await?;

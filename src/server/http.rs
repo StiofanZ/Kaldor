@@ -59,7 +59,7 @@ async fn handle(mut req: Request<Incoming>, src: SocketAddr, s: Service) -> Resu
         host,
         port: auth.port_u16().unwrap_or(80),
     };
-    let (mut up, session) = s.engine.tcp(src, &t, &t.host, "HTTP").await?;
+    let (mut up, session) = s.engine.tcp(src, &t, &t.host, "HTTP", None).await?;
     if connect {
         let upgrade = hyper::upgrade::on(&mut req);
         tokio::spawn(async move {

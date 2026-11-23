@@ -14,6 +14,23 @@ table=189
 pref=10891
 clean_rules() {
  [ -e "$run/firewall" ] || return 0
+ if [ -e "$run/firewall6" ]; then
+  read -r iface6 < "$run/firewall6" || return 1
+  while ip6tables -t mangle -C PREROUTING -i "$iface6" -j AXPROXY6_LAN 2>/dev/null; do
+   ip6tables -t mangle -D PREROUTING -i "$iface6" -j AXPROXY6_LAN || return 1
+  done
+  if ip6tables -t mangle -S AXPROXY6_LAN >/dev/null 2>&1; then
+   ip6tables -t mangle -F AXPROXY6_LAN && ip6tables -t mangle -X AXPROXY6_LAN || return 1
+  fi
+  if ip -6 rule show | grep -q "^$pref:.*fwmark 0x2000000/0x2000000.*lookup $table"; then
+   ip -6 rule del pref "$pref" fwmark "$mark" table "$table" || return 1
+  fi
+  if ip -6 route show table "$table" proto 222 2>/dev/null | grep -q '^local \(default\|::/0\) dev lo'; then
+   ip -6 route del local ::/0 dev lo table "$table" proto 222 || return 1
+  fi
+  rm -f "$run/firewall6"
+ fi
+ if [ ! -e "$run/firewall4" ]; then rm -f "$run/firewall"; return 0; fi
  while iptables -t nat -C PREROUTING -j AXPROXY_DNS 2>/dev/null; do
   iptables -t nat -D PREROUTING -j AXPROXY_DNS || return 1
  done
@@ -32,18 +49,54 @@ clean_rules() {
  if ip route show table "$table" proto 222 2>/dev/null | grep -q '^local default dev lo'; then
   ip route del local default dev lo proto 222 table "$table" || return 1
  fi
- rm -f "$run/firewall"
+ rm -f "$run/firewall4" "$run/firewall"
+}
+apply_v6() {
+ [ -s "$run/ipv6-rules" ] || return 0
+ rules6=$(ip -6 rule show) || { echo "IPv6 policy routing unavailable" >&2; return 1; }
+ if printf '%s\n' "$rules6" | grep -q "^$pref:" || [ -n "$(ip -6 route show table "$table" 2>/dev/null)" ] || ip6tables -t mangle -S AXPROXY6_LAN >/dev/null 2>&1; then
+  echo 'IPv6 routing resources already in use' >&2; return 1
+ fi
+ printf '%s\n' "$iface" > "$run/firewall6" || return 1
+ ip -6 route add local ::/0 dev lo table "$table" proto 222 || return 1
+ ip -6 rule add pref "$pref" fwmark "$mark" table "$table" || return 1
+ ip6tables -t mangle -N AXPROXY6_LAN || return 1
+ for net in ::/96 ::ffff:0:0/96 ff00::/8; do
+  ip6tables -t mangle -A AXPROXY6_LAN -d "$net" -j RETURN || return 1
+ done
+ v6_targets dns || return 1
+ local6=$(ip -6 route show table local) || return 1
+ connected6=$(ip -6 route show dev "$iface") || return 1
+ for net in fc00::/7 fe80::/10 $(printf '%s\n' "$local6" | awk '$1=="local"{print $2}') $(printf '%s\n' "$connected6" | awk '$1 ~ /:/ && !/ via /{print $1}'); do
+  ip6tables -t mangle -A AXPROXY6_LAN -d "$net" -j RETURN || return 1
+ done
+ v6_targets all || return 1
+ ip6tables -t mangle -I PREROUTING 1 -i "$iface" -j AXPROXY6_LAN
+}
+v6_targets() {
+ phase=$1
+ while read -r kind selector port; do
+  for proto in udp tcp; do
+   set -- -p "$proto"
+   if [ "$kind" = mac ]; then set -- "$@" -m mac --mac-source "$selector"; else set -- "$@" -s "$selector"; fi
+   if [ "$phase" = dns ]; then set -- "$@" --dport 53; fi
+   ip6tables -t mangle -A AXPROXY6_LAN "$@" -j TPROXY --on-ip ::1 --on-port "$port" --tproxy-mark "$mark" || return 1
+  done
+ done < "$run/ipv6-rules"
 }
 apply_rules() {
  clean_rules || return 1
  devices=$("$1" devices "$2") || return 1
- [ -n "$devices" ] || return 0
+ [ -n "$devices" ] || [ -s "$run/ipv6-rules" ] || return 0
  iface=$(nvram get lan_ifname); lan=$(nvram get lan_ipaddr)
  [ -n "$iface" ] && [ -n "$lan" ] || return 1
+ touch "$run/firewall" || return 1
+ apply_v6 || return 1
+ [ -n "$devices" ] || return 0
  if ip rule show | grep -q "^$pref:" || [ -n "$(ip route show table "$table" 2>/dev/null)" ] || iptables -t mangle -S AXPROXY_LAN >/dev/null 2>&1 || iptables -t nat -S AXPROXY_DNS >/dev/null 2>&1; then
   echo 'Kaldor routing resources already in use' >&2; return 1
  fi
- touch "$run/firewall" || return 1
+ touch "$run/firewall4" || return 1
  modprobe xt_TPROXY || return 1
  ip route add local default dev lo proto 222 table "$table" || return 1
  ip rule add pref "$pref" fwmark "$mark" table "$table" || return 1
@@ -122,7 +175,7 @@ launch() {
  "$1" enabled "$2" 2>/dev/null || return 0
  lan=$(nvram get lan_ipaddr) && iface=$(nvram get lan_ifname) || return 1
  [ -n "$lan" ] && [ -n "$iface" ] || return 1
- rm -f "$run/ready" || return 1
+ rm -f "$run/ready" "$run/ipv6-rules" || return 1
  # Closing fd 3 releases the reader as soon as the listeners are ready.
  result=$(
   (

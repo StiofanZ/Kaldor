@@ -75,7 +75,8 @@ def server(root):
 def query(src, dst, proto, label):
     tx = secrets.token_bytes(2)
     data = tx + bytes.fromhex("01000001000000000000") + bytes([len(label)]) + label.encode() + b"\x04test\0\0\x01\0\x01"
-    with socket.socket(type=socket.SOCK_DGRAM if proto == "udp" else socket.SOCK_STREAM) as sock:
+    with socket.socket(socket.AF_INET6 if ":" in src else socket.AF_INET,
+                       socket.SOCK_DGRAM if proto == "udp" else socket.SOCK_STREAM) as sock:
         sock.settimeout(8)
         sock.bind((src, 0))
         sock.connect((dst, 53))

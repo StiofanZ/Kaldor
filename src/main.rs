@@ -74,7 +74,9 @@ async fn execute() -> Result<()> {
         "devices" => {
             cfg.validate()?;
             for net in cfg.devices {
-                println!("{}", net.trunc());
+                if net.addr().is_ipv4() {
+                    println!("{}", net.trunc());
+                }
             }
         }
         #[cfg(target_os = "linux")]

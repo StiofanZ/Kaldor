@@ -112,11 +112,12 @@ impl Resolver {
 
     async fn answer(
         &self,
-        engine: &Engine,
+        service: &Service,
         src: SocketAddr,
         wire: Vec<u8>,
         udp: bool,
     ) -> Result<Bytes> {
+        let engine = &service.engine;
         let query = Message::from_vec(&wire)?;
         ensure!(
             query.metadata.message_type == MessageType::Query
@@ -128,9 +129,14 @@ impl Resolver {
             host: RESOLVER_IP.to_string(),
             port: 443,
         };
-        let outbound = engine
-            .cfg
-            .route(src.ip(), resolver.addr(), 443, HOST, Network::Tcp);
+        let outbound = engine.cfg.route(
+            src.ip(),
+            service.reserved,
+            resolver.addr(),
+            443,
+            HOST,
+            Network::Tcp,
+        );
         let result = async {
             let data = timeout(
                 LIMIT,
@@ -178,7 +184,8 @@ impl Resolver {
 
     pub fn udp(
         self: &Arc<Self>,
-        engine: &Arc<Engine>,
+        service: &Service,
+        original_v6: Option<SocketAddr>,
         sock: &Arc<UdpSocket>,
         src: SocketAddr,
         query: &[u8],
@@ -190,18 +197,22 @@ impl Resolver {
             return;
         };
         let resolver = self.clone();
-        let (engine, sock, query) = (engine.clone(), sock.clone(), query.to_vec());
+        let (service, sock, query) = (service.clone(), sock.clone(), query.to_vec());
         tokio::spawn(async move {
             let _permit = permit;
-            if let Ok(reply) = resolver.answer(&engine, src, query, true).await {
-                let _ = sock.send_to(&reply, src).await;
+            if let Ok(reply) = resolver.answer(&service, src, query, true).await {
+                if let Some(original) = original_v6 {
+                    let _ = super::ipv6::send_dns(&service, original, src, &reply);
+                } else {
+                    let _ = sock.send_to(&reply, src).await;
+                }
             }
         });
     }
 
     pub async fn tcp(
         &self,
-        engine: &Engine,
+        service: &Service,
         src: SocketAddr,
         stream: &mut TcpStream,
     ) -> Result<()> {
@@ -215,7 +226,7 @@ impl Resolver {
             })
             .await??;
             let _permit = self.slots.try_acquire()?;
-            let reply = self.answer(engine, src, packet, false).await?;
+            let reply = self.answer(service, src, packet, false).await?;
             timeout(LIMIT, async {
                 stream.write_u16(reply.len().try_into()?).await?;
                 stream.write_all(&reply).await?;

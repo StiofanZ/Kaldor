@@ -68,8 +68,8 @@ output{overflow-wrap:anywhere}
 <div class="port-field"><label for="listenPort">代理端口<input id="listenPort" type="number" min="1" max="65535" step="1" required aria-describedby="portHint"></label>
 <small id="portHint">HTTP 和 SOCKS5 均使用此端口，默认 6000。更改后请同步更新客户端。</small></div>
 <label>默认出口<select id="fallback"></select></label>
-<label class="wide" for="devices">透明代理设备<textarea id="devices" placeholder="每行一个 IPv4 网段，单台设备用 /32" aria-describedby="devicesHint"></textarea></label>
-<small class="wide" id="devicesHint">接管所选设备的公网 IPv4 流量，DNS（TCP/UDP 53）经所选出口加密解析。留空时只启用手动代理。</small>
+<label class="wide" for="devices">透明代理设备<textarea id="devices" placeholder="每行一个 IPv4 或 IPv6 网段，单个地址用 /32 或 /128" aria-describedby="devicesHint"></textarea></label>
+<small class="wide" id="devicesHint">已绑定 DHCP 的设备可用 IPv4 保留地址同时选择其 IPv6 流量，也可填写 IPv6 网段。DNS（TCP/UDP 53）经所选出口加密解析。留空时只启用手动代理。</small>
 </div></div>
 <section id="release" data-phase="RELEASE_PHASE" data-version="RELEASE_VERSION" data-installed="COMPONENT_VERSION">
 <div class="row-tools"><strong>组件更新</strong><button type="button" id="checkRelease">检查新版本</button>

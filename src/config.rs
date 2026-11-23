@@ -117,10 +117,6 @@ impl Config {
                 .with_context(|| format!("upstream {}", u.name))?;
         }
         ensure!(
-            self.devices.iter().all(|p| matches!(p, IpNet::V4(_))),
-            "transparent device prefixes must be IPv4"
-        );
-        ensure!(
             names.contains(self.default.as_str()),
             "unknown default outbound"
         );
@@ -154,6 +150,7 @@ impl Config {
     pub fn route(
         &self,
         src: IpAddr,
+        reserved: Option<std::net::Ipv4Addr>,
         dst: Option<IpAddr>,
         port: u16,
         domain: &str,
@@ -169,7 +166,9 @@ impl Config {
             .iter()
             .find(|r| {
                 r.network.is_none_or(|n| n == network)
-                    && r.source.is_none_or(|p| p.contains(&src))
+                    && r.source.is_none_or(|p| {
+                        p.contains(&src) || reserved.is_some_and(|v| p.contains(&IpAddr::V4(v)))
+                    })
                     && r.destination
                         .is_none_or(|p| dst.is_some_and(|ip| p.contains(&ip)))
                     && (r.port == 0 || r.port == port)
@@ -289,7 +288,7 @@ mod tests {
             ("192.0.2.7", "notexample.test", "direct"),
         ] {
             assert_eq!(
-                cfg.route(ip.parse().unwrap(), None, 443, host, Network::Tcp),
+                cfg.route(ip.parse().unwrap(), None, None, 443, host, Network::Tcp),
                 want
             );
         }
@@ -339,6 +338,7 @@ mod tests {
             assert_eq!(
                 cfg.route(
                     src.parse().unwrap(),
+                    None,
                     dst.map(|ip| ip.parse().unwrap()),
                     port,
                     "",
@@ -375,7 +375,7 @@ mod tests {
         ] {
             cfg.rules[0].domain_suffix = suffix.into();
             cfg.validate().unwrap();
-            assert_eq!(cfg.route(src, None, 443, host, Network::Tcp), want);
+            assert_eq!(cfg.route(src, None, None, 443, host, Network::Tcp), want);
         }
     }
 
