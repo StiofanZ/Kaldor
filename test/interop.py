@@ -152,20 +152,25 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     for p in peers:
         cfg={"enabled":True,"devices":["192.0.2.2/32"],"upstreams":[dict(name="node",**p)],"default":"node",
              "rules":[{"port":18481,"outbound":"reject"},{"domain_suffix":"blocked.example","outbound":"reject"}]}
+        if p["protocol"] == "anytls":
+            modes=dict(cfg, global_outbound="node", default="reject")
+            modes.pop("devices")
+            for mode, expected in [("direct", None), ("global", "198.51.100.1")]:
+                control("configure", conf("switch-mode.json", dict(modes, outbound_mode=mode)))
+                for source in ("192.0.2.2","192.0.2.3"):
+                    assert get(18481,"--noproxy","*","--interface",source) == (expected or source)
+                    result=command(*client,sys.executable,"-c",
+                        "import socket,sys;s=socket.socket(2,2);s.settimeout(5);s.bind((sys.argv[1],0));"
+                        "s.sendto(b'udp',('198.51.100.2',18482));print(s.recv(64).decode())",source)
+                    assert result == "udp/" + (expected or source)
+                if mode == "global":
+                    assert get(18481,"--noproxy","","-x","http://192.0.2.1:6000") == expected
+            print("direct and global TCP/UDP for both LAN clients, saved reject rule bypassed PASS",flush=True)
         emulator=os.environ.get("KALDOR_TEST_QEMU")
         if emulator:
             arm=Path(os.environ["KALDOR_TEST_ARM"]).resolve()
-            ready=root/"arm-ready"
-            target_config=conf("arm.json",dict(cfg,devices=[]))
-            target=subprocess.Popen([emulator,str(arm),"serve",str(target_config),"127.0.0.1","lo",str(ready)],env=env)
-            try:
-                wait(lambda: ready.exists() or target.poll() is not None)
-                assert target.poll() is None,"ARMv7 manual listener"
-                for addr in ["http://127.0.0.1:6000","socks5h://127.0.0.1:6000"]:
-                    assert command("curl","--noproxy","","-x",addr,"-fsS","--max-time","8","http://198.51.100.2:18480")=="198.51.100.1"
-                print("ARMv7 HTTP/SOCKS5",p["protocol"],p.get("flow",""),"PASS",flush=True)
-            finally:
-                target.terminate();target.wait(5)
+            command(emulator, str(arm), "check", conf("arm.json", cfg))
+            assert "出站模式" in command(emulator, str(arm), "page")
         control("configure",conf("input.json",cfg))
         assert control("status")=="running"
         assert all(not x["secret"] if "secret" in x else True for x in json.loads(control("view"))["upstreams"])
@@ -173,7 +178,7 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
             assert get(18480,"--noproxy","","-x",f"{proto}://192.0.2.1:{port}")=="198.51.100.1",(p["protocol"],proto)
         assert get(18480,"--noproxy","","--proxytunnel","-x","http://192.0.2.1:6000")=="198.51.100.1"
         assert get(18480,"--noproxy","*")=="198.51.100.1","transparent TCP"
-        assert get(18481,"--noproxy","*","--interface","192.0.2.3")=="192.0.2.3","unselected"
+        assert get(18480,"--noproxy","*","--interface","192.0.2.3")=="198.51.100.1","all LAN clients"
         try: get(18481,"--noproxy","*")
         except subprocess.CalledProcessError: pass
         else: raise AssertionError("reject rule")
@@ -228,7 +233,7 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
         else:
             raise AssertionError(("TCP rule ignored", flags))
     assert get(18482, "--interface", "192.0.2.3", "--noproxy", "", "-x", "http://192.0.2.1:6000") == "198.51.100.1"
-    assert tcp_split("--interface", "192.0.2.3") == "192.0.2.3"
+    assert tcp_split("--interface", "192.0.2.3") == "198.51.100.1"
     assert udp_split() == "udp/198.51.100.1"
     assert command(*client, sys.executable, __file__, "socks-udp") == "udp/198.51.100.1"
     # A failing default proves UDP reached the named node through its rule.
@@ -353,6 +358,11 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     else:raise AssertionError("broken candidate accepted")
     assert (root/"slots/active").read_text().strip()=="a" and control("status")=="running"
     assert get(18480,"--noproxy","*")=="198.51.100.1"
+    # A prior release reads only its own configuration format. Exercise the
+    # supported upgrade direction with its original saved device selection.
+    control("stop")
+    (root/"slots/config.json").write_text(json.dumps(cfg))
+    before=(root/"slots/config.json").read_bytes()
     assert command(upgrade,"version")!=command(engine,"version")
     control("install",upgrade,hashlib.sha256(upgrade.read_bytes()).hexdigest())
     assert (root/"slots/active").read_text().strip()=="b" and command(root/"slots/b","version")==command(upgrade,"version")

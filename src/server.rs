@@ -30,18 +30,9 @@ struct Service {
     reserved: Option<Ipv4Addr>,
     tcp_slots: Arc<Semaphore>,
     udp_slots: Arc<Semaphore>,
-    dns: Option<Arc<dns::Resolver>>,
+    dns: Arc<dns::Resolver>,
 }
 impl Service {
-    fn device_dns(&self, src: SocketAddr) -> Option<&Arc<dns::Resolver>> {
-        self.dns.as_ref().filter(|_| {
-            self.engine
-                .cfg
-                .devices
-                .iter()
-                .any(|net| net.contains(&src.ip()))
-        })
-    }
     fn socket(&self, udp: bool, transparent: bool, addr: SocketAddr) -> Result<Socket> {
         let (kind, proto) = if udp {
             (Type::DGRAM, Protocol::UDP)
@@ -85,12 +76,8 @@ pub async fn run(cfg: Config, lan: &str, iface: &str, path: &str) -> Result<()> 
         "LAN address and interface required"
     );
     let port = cfg.listen_port();
-    let transparent = !cfg.devices.is_empty();
     let service = Service {
-        dns: transparent
-            .then(dns::Resolver::new)
-            .transpose()?
-            .map(Arc::new),
+        dns: Arc::new(dns::Resolver::new()?),
         engine: Arc::new(Engine::new(cfg)?),
         lan,
         iface: iface.into(),
@@ -102,7 +89,7 @@ pub async fn run(cfg: Config, lan: &str, iface: &str, path: &str) -> Result<()> 
     service.engine.start_probes(&mut workers)?;
     let manual = service.listener(port, false)?;
     workers.spawn(accept(manual, service.clone(), false));
-    if transparent {
+    {
         let tcp = service.listener(TRANSPARENT_PORT, true)?;
         workers.spawn(accept(tcp, service.clone(), true));
         let u = service.datagram(TRANSPARENT_PORT, true)?;
@@ -112,9 +99,7 @@ pub async fn run(cfg: Config, lan: &str, iface: &str, path: &str) -> Result<()> 
     let directory = std::path::Path::new(path)
         .parent()
         .context("missing runtime directory")?;
-    if transparent {
-        ipv6::start(&service, directory, &mut workers)?;
-    }
+    ipv6::start(&service, directory, &mut workers)?;
     let activity = service.engine.activity.clone();
     let socket = crate::activity::Activity::listener(directory)?;
     workers.spawn(activity.serve(socket));
@@ -153,20 +138,16 @@ async fn accept(listener: TcpListener, s: Service, transparent: bool) -> Result<
             if transparent {
                 let dest = c.local_addr()?;
                 if dest.is_ipv6() && dest.port() == 53 {
-                    s.dns
-                        .as_ref()
-                        .context("missing DNS resolver")?
-                        .tcp(&s, from, &mut c)
-                        .await?;
+                    s.dns.tcp(&s, from, &mut c).await?;
                     return Ok(());
                 }
                 if dest == SocketAddr::from((s.lan, TRANSPARENT_PORT)) {
-                    if let Some(resolver) = s.device_dns(from) {
-                        resolver.tcp(&s, from, &mut c).await?;
-                    }
+                    s.dns.tcp(&s, from, &mut c).await?;
                     return Ok(());
                 }
-                let domain_routing = s.engine.cfg.rules.iter().any(|r| r.needs_tcp_domain());
+                let domain_routing = s.engine.cfg.outbound_mode
+                    == crate::config::OutboundMode::Rules
+                    && s.engine.cfg.rules.iter().any(|r| r.needs_tcp_domain());
                 let (data, domain) = if domain_routing {
                     sniff::read(&mut c, dest.port()).await?
                 } else {

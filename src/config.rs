@@ -8,15 +8,30 @@ fn list<'de, T: Deserialize<'de>, D: Deserializer<'de>>(d: D) -> Result<Vec<T>, 
     Ok(Option::<Vec<T>>::deserialize(d)?.unwrap_or_default())
 }
 
+// Consume and validate the former device filter when reading an existing
+// configuration. Newly saved configurations have interface-wide ingress.
+fn read_old_devices<'de, D: Deserializer<'de>>(d: D) -> Result<(), D::Error> {
+    let _ = Option::<Vec<IpNet>>::deserialize(d)?;
+    Ok(())
+}
+
 #[derive(Deserialize, Serialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub enabled: bool,
+    #[serde(
+        default,
+        rename = "devices",
+        deserialize_with = "read_old_devices",
+        skip_serializing
+    )]
+    _old_devices: (),
     #[serde(skip_serializing_if = "Option::is_none")]
     listen_port: Option<NonZeroU16>,
+    pub outbound_mode: OutboundMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub global_outbound: Option<String>,
     pub default: String,
-    #[serde(deserialize_with = "list")]
-    pub devices: Vec<IpNet>,
     #[serde(deserialize_with = "list")]
     pub rules: Vec<Rule>,
     #[serde(deserialize_with = "list")]
@@ -24,6 +39,15 @@ pub struct Config {
     #[serde(deserialize_with = "list", skip_serializing_if = "Vec::is_empty")]
     pub policies: Vec<Policy>,
 }
+#[derive(Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutboundMode {
+    Direct,
+    Global,
+    #[default]
+    Rules,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
@@ -128,7 +152,7 @@ impl Config {
             "manual port conflicts with transparent listener"
         );
         ensure!(
-            self.upstreams.len() <= 32 && self.devices.len() <= 128 && self.rules.len() <= 512,
+            self.upstreams.len() <= 32 && self.rules.len() <= 512,
             "configuration limit exceeded"
         );
         let mut names = HashSet::from(["direct", "reject"]);
@@ -171,6 +195,16 @@ impl Config {
             names.contains(self.default.as_str()),
             "unknown default outbound"
         );
+        if let Some(name) = &self.global_outbound {
+            ensure!(
+                names.contains(name.as_str()) && !matches!(name.as_str(), "direct" | "reject"),
+                "global outbound must be a proxy node or policy"
+            );
+        }
+        ensure!(
+            self.outbound_mode != OutboundMode::Global || self.global_outbound.is_some(),
+            "select a global proxy outbound"
+        );
         for (index, rule) in self.rules.iter().enumerate() {
             if !rule.domain_suffix.is_empty() {
                 let suffix = rule
@@ -198,6 +232,18 @@ impl Config {
         }
         Ok(())
     }
+    pub fn has_ipv4_source_rules(&self) -> bool {
+        self.outbound_mode == OutboundMode::Rules
+            && self
+                .rules
+                .iter()
+                .any(|r| matches!(r.source, Some(IpNet::V4(_))))
+    }
+    pub fn matches_reserved_source(&self, ip: std::net::Ipv4Addr) -> bool {
+        self.rules
+            .iter()
+            .any(|r| r.source.is_some_and(|net| net.contains(&IpAddr::V4(ip))))
+    }
     pub fn route(
         &self,
         src: IpAddr,
@@ -207,6 +253,16 @@ impl Config {
         domain: &str,
         network: Network,
     ) -> &str {
+        match self.outbound_mode {
+            OutboundMode::Global => {
+                return self
+                    .global_outbound
+                    .as_deref()
+                    .expect("validated global outbound");
+            }
+            OutboundMode::Direct => return "direct",
+            OutboundMode::Rules => {}
+        }
         let domain = domain.strip_suffix('.').unwrap_or(domain);
         let domain = if domain.parse::<IpAddr>().is_ok() {
             ""
@@ -513,6 +569,27 @@ mod tests {
     }
 
     #[test]
+    fn modes_validate_global_target_and_migrate_old_scope() {
+        let legacy = serde_json::json!({"enabled":true,"devices":["192.0.2.8/32"],"default":"direct",
+            "rules":[{"port":443,"outbound":"reject"}],
+            "upstreams":[{"name":"east","protocol":"socks5","server":"east.test:1080"}]});
+        let mut cfg: Config = serde_json::from_value(legacy).unwrap();
+        assert!(serde_json::to_value(&cfg).unwrap().get("devices").is_none());
+        let src = "192.0.2.9".parse().unwrap();
+        assert_eq!(cfg.route(src, None, None, 443, "", Network::Udp), "reject");
+        cfg.outbound_mode = OutboundMode::Global;
+        for bad in [None, Some("direct"), Some("reject"), Some("missing")] {
+            cfg.global_outbound = bad.map(String::from);
+            assert!(cfg.validate().is_err());
+        }
+        cfg.global_outbound = Some("east".into());
+        cfg.validate().unwrap();
+        assert_eq!(cfg.route(src, None, None, 443, "", Network::Udp), "east");
+        cfg.outbound_mode = OutboundMode::Direct;
+        assert_eq!(cfg.route(src, None, None, 443, "", Network::Tcp), "direct");
+    }
+
+    #[test]
     fn configuration_contract() {
         for s in [
             r#"{"unknown":1}"#,
@@ -534,10 +611,8 @@ mod tests {
                     .is_err()
             );
         }
-        let cfg: Config = serde_json::from_str(
-            r#"{"default":"direct","devices":null,"upstreams":null,"rules":null}"#,
-        )
-        .unwrap();
+        let cfg: Config =
+            serde_json::from_str(r#"{"default":"direct","upstreams":null,"rules":null}"#).unwrap();
         cfg.validate().unwrap();
     }
 }

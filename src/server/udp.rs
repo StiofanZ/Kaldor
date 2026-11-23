@@ -222,14 +222,10 @@ pub(super) async fn transparent(sock: UdpSocket, s: Service) -> Result<()> {
         sock.readable().await?;
         match sock.try_io(Interest::READABLE, || receive(&sock, &mut data)) {
             Ok((n, src, dst)) if dst.is_ipv6() && dst.port() == 53 => {
-                if let Some(resolver) = &s.dns {
-                    resolver.udp(&s, Some(dst), &sock, src, &data[..n]);
-                }
+                s.dns.udp(&s, Some(dst), &sock, src, &data[..n]);
             }
             Ok((n, src, dst)) if dst == SocketAddr::from((s.lan, TRANSPARENT_PORT)) => {
-                if let Some(resolver) = s.device_dns(src) {
-                    resolver.udp(&s, None, &sock, src, &data[..n]);
-                }
+                s.dns.udp(&s, None, &sock, src, &data[..n]);
             }
             Ok((n, src, dst)) => flows.feed(src, Target::from_socket(dst), &data[..n]),
             Err(e)

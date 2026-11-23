@@ -1,5 +1,6 @@
 """Network-namespace regression for transparent DNS. All answers are synthetic."""
 import http.server
+import json
 from pathlib import Path
 import secrets
 import socket
@@ -130,7 +131,7 @@ def verify(root, command, spawn, wait, client, wan, sing, conf, control, activit
     for proto in ("udp", "tcp"):
         for dst in (WAN, "192.0.2.1"):
             assert lookup(selected, dst, proto) == ENCRYPTED
-        assert lookup(other, WAN, proto) == PLAIN
+        assert lookup(other, WAN, proto) == ENCRYPTED
     assert lookup(selected, WAN, "udp", "oversize") == "truncated"
     assert lookup(selected, WAN, "tcp", "oversize") == ENCRYPTED
     assert any(r["ingress"] == "透明 DNS" and r["outbound"] == "node" and r["result"] == "opened"
@@ -138,9 +139,26 @@ def verify(root, command, spawn, wait, client, wan, sing, conf, control, activit
     (root / "wrong-cert").touch()
     control("configure", cfg)
     assert lookup(selected, WAN, "udp") == "rcode 2"
-    assert lookup(other, WAN, "udp") == PLAIN
+    assert lookup(other, WAN, "udp") == "rcode 2"
     (root / "wrong-cert").unlink()
-    print("DoH via AnyTLS only, UDP/TCP router and external DNS, reverse NAT, device isolation, TC retry and TLS failure PASS", flush=True)
+    modes = json.loads(cfg.read_text())
+    modes.pop("devices", None)
+    modes.update(global_outbound="node", rules=[{"port":443,"outbound":"reject"}])
+    for mode, expected in [("global",ENCRYPTED),("direct",PLAIN),("rules","rcode 2")]:
+        modes["outbound_mode"] = mode
+        control("configure", conf("dns-mode.json", modes))
+        for source in (selected, other):
+            for proto in ("udp","tcp"):
+                assert lookup(source, WAN, proto) == expected, (mode, source, proto)
+        if mode == "direct":
+            assert control("status") == "bypass"
+            assert not (root/"runtime/pid").exists()
+            for args in [("iptables","-t","mangle","-S"),("iptables","-t","nat","-S"),("ip6tables","-t","mangle","-S")]:
+                assert "AXPROXY" not in command(*args)
+            for family in ("-4","-6"):
+                assert "10891:" not in command("ip",family,"rule","show")
+            assert ":6000 " not in command("ss","-ltn")
+    print("DoH via AnyTLS only, UDP/TCP router and external DNS, reverse NAT, all LAN sources, global/bypass/rules switches, TC retry and TLS failure PASS", flush=True)
 
 
 if __name__ == "__main__":

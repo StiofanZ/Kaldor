@@ -35,16 +35,16 @@ def verify(root, command, spawn, wait, client, wan, sing, conf, control, activit
     spawn(*wan, sys.executable, __file__, "origin")
     wait(lambda: ":18480" in command(*wan, "ss", "-6ltn"))
     mac = json.loads(command(*client, "ip", "-j", "link", "show", "lan0p"))[0]["address"]
-    # A LAN peer that is not reserved must keep native IPv6 routing.
+    # An unreserved peer enters the engine and uses its direct outbound.
     def get(src):
         return command(*client, "curl", "-gfsS", "--noproxy", "*", "--max-time", "8",
                        "--interface", src, "http://[" + SERVER + "]:18480/")
-    cfg = {"enabled": True, "devices": ["192.0.2.2/32"], "default": "reject",
+    cfg = {"enabled": True, "devices": ["192.0.2.2/32"], "default": "direct",
            "upstreams": [dict(peer, name="node", server="198.51.100.2:19443")],
            "rules": [{"source":"192.0.2.2/32","outbound":"node"}]}
     config = conf("ipv6.json", cfg)
     control("configure", config)
-    assert get(PHONE) == PHONE
+    assert get(PHONE) == "2001:db8:2::1"
     reservations = root / "runtime/reservations"
     reservations.write_text("<" + mac + ">192.0.2.2>>test")
     control("configure", config)
@@ -58,7 +58,7 @@ def verify(root, command, spawn, wait, client, wan, sing, conf, control, activit
     command(*other_ns, "ip", "-6", "addr", "add", "2001:db8:1::33/64", "dev", "unselected", "nodad")
     command(*other_ns, "ip", "-6", "route", "add", "default", "via", LAN)
     assert command(*other_ns, "curl", "-gfsS", "--noproxy", "*", "--max-time", "6",
-                   "http://["+SERVER+"]:18480/") == "2001:db8:1::33"
+                   "http://["+SERVER+"]:18480/") == "2001:db8:2::1"
     for src in (PHONE, TEMP):
         assert get(src) == SERVER, "IPv4 source rule must follow the selected device"
         for proto in ("udp", "tcp"):
@@ -78,9 +78,17 @@ def verify(root, command, spawn, wait, client, wan, sing, conf, control, activit
     rows=activity()["recent"]
     assert any(r["transport"]=="UDP" and r["port"]==18444 and r["target"]=="peer.test" and r["outbound"]=="node" for r in rows)
     reservations.unlink()
-    cfg.update(devices=[PHONE+"/128"], rules=[{"source":PHONE+"/128","destination":SERVER+"/128","outbound":"node"}])
+    cfg.update(rules=[{"source":PHONE+"/128","destination":SERVER+"/128","outbound":"node"}])
     control("configure",conf("native-v6.json",cfg))
-    assert get(PHONE) == SERVER and get(TEMP) == TEMP
+    assert get(PHONE) == SERVER and get(TEMP) == "2001:db8:2::1"
+    cfg.pop("devices", None)
+    cfg.update(outbound_mode="global", global_outbound="node", rules=[{"port":18480,"outbound":"reject"}])
+    control("configure",conf("global-v6.json",cfg))
+    assert get(PHONE)==SERVER and get(TEMP)==SERVER
+    cfg.update(outbound_mode="direct")
+    control("configure",conf("bypass-v6.json",cfg))
+    assert control("status")=="bypass"
+    assert get(PHONE)==PHONE and get(TEMP)==TEMP
     control("stop")
     assert "AXPROXY6_LAN" not in command("ip6tables","-t","mangle","-S")
     assert "10891:" not in command("ip","-6","rule","show")

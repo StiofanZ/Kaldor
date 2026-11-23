@@ -58,8 +58,9 @@ addEventListener('load',async ()=>{
   name.value='renamed';name.dispatchEvent(new Event('input'));
   assert(rule.value===east.id && fallback.value===east.id,'rename lost a selection');
   assert(rule.selectedOptions[0].textContent==='renamed','label did not follow rename');
-  click(west,'设为默认出口');
-  assert(!saved && fallback.value===west.id && rule.value===east.id,'staging the switch');
+  assert(byId('outboundMode').value==='rules' && byId('globalField').hidden,'legacy mode');
+  click(west,'用于全局代理');
+  assert(!saved && byId('globalOutbound').value===west.id && !byId('globalField').hidden && fallback.value===east.id && rule.value===east.id,'staging the switch');
   click(east,'删除');click(west,'删除');
   assert(east.isConnected&&west.isConnected,'deleted referenced node');
   tab('rules').click();assert(active('rules'),'rules tab');
@@ -79,8 +80,15 @@ addEventListener('load',async ()=>{
   for(let i=0;byId('result').textContent!=='已应用' && i<100;i++)await new Promise(r=>setTimeout(r,10));
   assert(byId('result').textContent==='已应用','initial save did not finish');
   assert(saved.listen_port===16000,'listen port missing from save');
-  assert(saved.default==='west' && saved.rules[1].outbound==='renamed' && !('network' in saved.rules[1]) && saved.rules[0].network==='tcp' && saved.rules[0].outbound==='reject','wrong saved routing');
+  assert(saved.outbound_mode==='global' && saved.global_outbound==='west' && saved.default==='renamed' && !('devices' in saved) && saved.rules[1].outbound==='renamed' && !('network' in saved.rules[1]) && saved.rules[0].network==='tcp' && saved.rules[0].outbound==='reject','wrong saved routing');
   assert(saved.upstreams[0].previous_name==='east' && !saved.upstreams[0].secret,'credential edit');
+  byId('outboundMode').value='global';byId('outboundMode').dispatchEvent(new Event('change'));
+  byId('globalOutbound').value='';const beforeModeEdit=saved;form.requestSubmit();
+  assert(saved===beforeModeEdit && byId('result').textContent.includes('选择节点或策略'),'empty global allowed');
+  byId('outboundMode').value='direct';byId('outboundMode').dispatchEvent(new Event('change'));
+  form.requestSubmit();
+  for(let i=0;byId('result').textContent!=='已应用' && i<100;i++)await new Promise(r=>setTimeout(r,10));
+  assert(saved.outbound_mode==='direct' && saved.rules.length===2 && !('devices' in saved),'direct mode save');
   tab('policies').click();document.getElementById('newPolicy').click();
   const group=byId('policies').firstElementChild, key=k=>group.querySelector('[data-key='+k+']');
   key('name').value='office';key('name').dispatchEvent(new Event('input'));

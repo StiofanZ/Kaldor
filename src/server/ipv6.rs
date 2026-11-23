@@ -16,9 +16,9 @@ pub(super) fn start(
     dir: &Path,
     workers: &mut tokio::task::JoinSet<Result<()>>,
 ) -> Result<()> {
-    let devices = &service.engine.cfg.devices;
+    let cfg = &service.engine.cfg;
     let mut selectors = BTreeMap::new();
-    if devices.iter().any(|net| net.addr().is_ipv4()) && nvram("dhcp_static_x")?.trim() == "1" {
+    if cfg.has_ipv4_source_rules() && nvram("dhcp_static_x")?.trim() == "1" {
         let list = nvram("dhcp_staticlist")?;
         for row in list.trim().split('<') {
             let mut fields = row.split('>');
@@ -28,10 +28,7 @@ pub(super) fn start(
             let Ok(ip) = ip.parse::<Ipv4Addr>() else {
                 continue;
             };
-            if devices
-                .iter()
-                .any(|net| net.contains(&std::net::IpAddr::V4(ip)))
-            {
+            if cfg.matches_reserved_source(ip) {
                 ensure!(
                     mac.len() == 17
                         && mac
@@ -47,9 +44,8 @@ pub(super) fn start(
             }
         }
     }
-    for net in devices.iter().filter(|net| net.addr().is_ipv6()) {
-        selectors.insert(("net", net.trunc().to_string()), None);
-    }
+    // BTreeMap emits specific MAC matches before the catch-all network.
+    selectors.insert(("net", "::/0".to_owned()), None);
     let mut plan = String::new();
     for ((kind, selector), reserved) in selectors {
         let tcp = service.socket(false, true, (Ipv6Addr::LOCALHOST, 0).into())?;

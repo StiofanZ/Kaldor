@@ -86,14 +86,11 @@ v6_targets() {
 }
 apply_rules() {
  clean_rules || return 1
- devices=$("$1" devices "$2") || return 1
- [ -n "$devices" ] || [ -s "$run/ipv6-rules" ] || return 0
  iface=$(nvram get lan_ifname); lan=$(nvram get lan_ipaddr)
  [ -n "$iface" ] && [ -n "$lan" ] || return 1
  modprobe xt_TPROXY || return 1
  touch "$run/firewall" || return 1
  apply_v6 || return 1
- [ -n "$devices" ] || return 0
  if ip rule show | grep -q "^$pref:" || [ -n "$(ip route show table "$table" 2>/dev/null)" ] || iptables -t mangle -S AXPROXY_LAN >/dev/null 2>&1 || iptables -t nat -S AXPROXY_DNS >/dev/null 2>&1; then
   echo 'Kaldor routing resources already in use' >&2; return 1
  fi
@@ -106,9 +103,7 @@ apply_rules() {
  iptables -t nat -N AXPROXY_DNS || return 1
  for proto in udp tcp; do
   iptables -t mangle -A AXPROXY_LAN -p "$proto" --dport 53 -j RETURN || return 1
-  for dev in $devices; do
-   iptables -t nat -A AXPROXY_DNS -i "$iface" -s "$dev" -p "$proto" --dport 53 -j DNAT --to-destination "$lan:7893" || return 1
-  done
+  iptables -t nat -A AXPROXY_DNS -i "$iface" -p "$proto" --dport 53 -j DNAT --to-destination "$lan:7893" || return 1
  done
  # Linux 4.4 on this model has no xt_addrtype. Include every local address
  # (including a public WAN address), broadcast and directly attached LAN prefix.
@@ -122,10 +117,8 @@ apply_rules() {
  for net in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4; do
   iptables -t mangle -A AXPROXY_LAN -d "$net" -j RETURN || return 1
  done
- for dev in $devices; do
-  for proto in tcp udp; do
-   iptables -t mangle -A AXPROXY_LAN -s "$dev" -p "$proto" -j TPROXY --on-ip "$lan" --on-port 7893 --tproxy-mark "$mark" || return 1
-  done
+ for proto in tcp udp; do
+  iptables -t mangle -A AXPROXY_LAN -p "$proto" -j TPROXY --on-ip "$lan" --on-port 7893 --tproxy-mark "$mark" || return 1
  done
  iptables -t nat -I PREROUTING 1 -j AXPROXY_DNS || return 1
  iptables -t mangle -I PREROUTING 1 -j AXPROXY_LAN
@@ -137,7 +130,7 @@ stop() {
   for i in 1 2 3 4 5; do running || break; sleep 1; done
   if running; then kill -KILL "$pid" || return 1; fi
  fi
- rm -f "$run/pid" "$run/ready" "$run/routing-error"
+ rm -f "$run/pid" "$run/ready" "$run/routing-error" "$run/bypass"
 }
 # fd 3 reports startup to launch(). The supervisor owns the worker until exit.
 supervise() {
@@ -171,8 +164,13 @@ supervise() {
  return 1
 }
 launch() {
- "$1" check "$2" || return 1
- "$1" enabled "$2" 2>/dev/null || return 0
+ mode=$("$1" run-mode "$2") || return 1
+ case "$mode" in
+  disabled) return 0;;
+  bypass) touch "$run/bypass"; return $?;;
+  proxy) ;;
+  *) return 1;;
+ esac
  lan=$(nvram get lan_ipaddr) && iface=$(nvram get lan_ifname) || return 1
  [ -n "$lan" ] && [ -n "$iface" ] || return 1
  rm -f "$run/ready" "$run/ipv6-rules" || return 1
@@ -183,7 +181,7 @@ launch() {
    supervise "$1" "$2" "$lan" "$iface"
   ) &
  )
- if [ "$result" = ready ] && running && apply_rules "$1" "$2"; then return 0; fi
+ if [ "$result" = ready ] && running && apply_rules; then return 0; fi
  stop
  return 1
 }
@@ -218,11 +216,11 @@ case "$1" in
   fi;;
  firewall)
   if running; then
-   apply_rules "$bin" "$cfg" || { touch "$run/routing-error"; clean_rules; exit 1; }
+   apply_rules || { touch "$run/routing-error"; clean_rules; exit 1; }
    rm -f "$run/routing-error"
   else clean_rules; fi;;
  view) "$bin" view "$cfg";;
- status) if [ -e "$run/routing-error" ]; then echo degraded; elif running && [ -s "$run/ready" ]; then echo running; else echo stopped; fi;;
+ status) if [ -e "$run/routing-error" ]; then echo degraded; elif running && [ -s "$run/ready" ]; then echo running; elif [ -f "$run/bypass" ]; then echo bypass; else echo stopped; fi;;
  page) "$bin" page;;
  *) exit 2;;
 esac

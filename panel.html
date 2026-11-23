@@ -70,9 +70,10 @@ output{overflow-wrap:anywhere}
 <div class="fields">
 <div class="port-field"><label for="listenPort">代理端口<input id="listenPort" type="number" min="1" max="65535" step="1" required aria-describedby="portHint"></label>
 <small id="portHint">HTTP 和 SOCKS5 均使用此端口，默认 6000。更改后请同步更新客户端。</small></div>
-<label>默认出口<select id="fallback"></select></label>
-<label class="wide" for="devices">透明代理设备<textarea id="devices" placeholder="每行一个 IPv4 或 IPv6 网段，单个地址用 /32 或 /128" aria-describedby="devicesHint"></textarea></label>
-<small class="wide" id="devicesHint">已绑定 DHCP 的设备可用 IPv4 保留地址同时选择其 IPv6 流量，也可填写 IPv6 网段。DNS（TCP/UDP 53）经所选出口加密解析。留空时只启用手动代理。</small>
+<label>出站模式<select id="outboundMode"><option value="direct">直接连接</option><option value="global">全局代理</option><option value="rules">规则判定</option></select></label>
+<label id="globalField" hidden>全局代理出口<select id="globalOutbound"></select></label>
+<small class="wide" id="modeHint"></small>
+
 </div></div>
 <section id="release" data-phase="RELEASE_PHASE" data-version="RELEASE_VERSION" data-installed="COMPONENT_VERSION">
 <div class="row-tools"><strong>组件更新</strong><button type="button" id="checkRelease">检查新版本</button>
@@ -83,9 +84,9 @@ output{overflow-wrap:anywhere}
 <div id="nodes"></div><p class="hint" id="noNodes">尚未添加代理节点。</p></section>
 <section class="card" id="policyPanel" data-config inert role="tabpanel" aria-labelledby="tab-policies" hidden>
 <div class="section-head"><button type="button" id="newPolicy">添加策略</button></div>
-<div id="policies"></div><p class="hint" id="noPolicies">尚未添加策略。策略可作为默认出口或分流规则的出口。</p></section>
+<div id="policies"></div><p class="hint" id="noPolicies">尚未添加策略。可在全局代理或分流规则中选择策略。</p></section>
 <section class="card" id="rulePanel" data-config inert role="tabpanel" aria-labelledby="tab-rules" hidden><div class="section-head"><button type="button" id="newRule">添加规则</button></div>
-<p class="hint">按从上到下的顺序匹配，首条满足全部条件的规则生效。未命中时使用默认出口。</p><div id="rules"></div></section>
+<p class="hint">按从上到下的顺序匹配，首条满足全部条件的规则生效。未命中时使用下方的兜底出口。</p><label>规则兜底出口<select id="fallback"></select></label><div id="rules"></div></section>
 <div class="actions" data-config inert><button type="submit">保存并应用</button><output role="status" id="result"></output></div></form>
 <section class="card" id="connections" role="tabpanel" aria-labelledby="tab-connections" hidden>
 <div class="activity-head"><output role="status"></output><button type="button">刷新连接</button></div>
@@ -225,9 +226,26 @@ function populate(select,selected){
  select.replaceChildren(...targets().map(([id,label])=>new Option(label,id)));
  select.value=selected;
 }
+function updateMode(){
+ const mode=byId('outboundMode').value;
+ byId('globalField').hidden=mode!=='global';
+ byId('modeHint').textContent={
+  direct:'透明流量和 DNS 由路由器直接转发。手动代理端口关闭，请将客户端改为直接连接。',
+  global:'主 LAN 所有设备的公网 TCP、UDP 和 DNS 均使用所选节点或策略。',
+  rules:'主 LAN 所有设备的公网 TCP、UDP 和 DNS 按分流规则依次匹配，未命中时使用规则兜底出口。'
+ }[mode];
+}
+byId('outboundMode').onchange=()=>{
+ const global=byId('globalOutbound'),fallback=byId('fallback');
+ if(byId('outboundMode').value==='global' && !global.value && !['direct','reject'].includes(fallback.value))global.value=fallback.value;
+ updateMode();
+};
 function refresh(){
  for(const box of byId('policies').children)refreshMembers(box);
  for(const select of selectors())populate(select,select.value||'direct');
+ const global=byId('globalOutbound'), selected=global.value;
+ global.replaceChildren(new Option('请选择节点或策略',''),...targets().slice(2).map(([id,label])=>new Option(label,id)));
+ global.value=selected;
 }
 function targetId(name){
  const item=targets().find(([,label])=>label===name);
@@ -245,9 +263,9 @@ function entry(parent,title){
  head.className='entry';const label=document.createElement('strong');label.textContent=title;
  const tools=document.createElement('div');tools.className='row-tools';head.append(label,tools);
  tools.append(button('删除',()=>{
-  if(box.id && (selectors().some(select=>select.value===box.id) ||
+  if(box.id && (byId('globalOutbound').value===box.id || selectors().some(select=>select.value===box.id) ||
      Array.from(byId('policies').querySelectorAll('input[type=checkbox]:checked')).some(member=>member.value===box.id))){
-   byId('result').textContent='正在被引用，请先更改引用它的默认出口、分流规则或代理策略。';return;
+   byId('result').textContent='正在被引用，请先更改引用它的全局代理出口、分流规则或代理策略。';return;
   }
   box.remove();refresh();
  }));
@@ -259,9 +277,9 @@ function node(data={}){
  const name=field(box,'name','名称',data.name);
  name.required=true;name.pattern='[A-Za-z0-9_\\-]{1,48}';
  name.title='1 至 48 个英文字母、数字、下划线或连字符';name.oninput=refresh;
- box.querySelector('.row-tools').prepend(button('设为默认出口',()=>{
-  byId('fallback').value=box.id;
-  byId('result').textContent='默认出口已选中，保存并应用后生效。';
+ box.querySelector('.row-tools').prepend(button('用于全局代理',()=>{
+  byId('outboundMode').value='global';byId('globalOutbound').value=box.id;updateMode();
+  byId('result').textContent='已选择全局代理，保存并应用后生效。';
  }));
  const proto=field(box,'protocol','协议',data.protocol,['anytls','socks5','vless-reality']);
  const server=field(box,'server','服务器和端口',data.server);server.required=true;server.placeholder='proxy.example:443';
@@ -358,10 +376,12 @@ function lockConfig(locked){
 async function load(){
  const [r,s]=await Promise.all([fetch('/axproxy-state.cgi',{cache:'no-store'}),fetch('/axproxy-status.cgi',{cache:'no-store'})]);
  if(!r.ok||!s.ok)throw Error('无法读取配置，请重新登录管理页。');
- const c=await r.json();const status=(await s.text()).trim();byId('status').dataset.state=status;byId('status').textContent=({running:'运行中',degraded:'透明路由异常',stopped:'已停止',uninstalled:'未安装'}[status]||'状态未知');
- byId('listenPort').value=c.listen_port??6000;byId('enabled').checked=c.enabled;byId('devices').value=(c.devices||[]).join('\n');
+ const c=await r.json();const status=(await s.text()).trim();byId('status').dataset.state=status;byId('status').textContent=({running:'运行中',bypass:'直连中',degraded:'透明路由异常',stopped:'已停止',uninstalled:'未安装'}[status]||'状态未知');
+ byId('listenPort').value=c.listen_port??6000;byId('enabled').checked=c.enabled;
  byId('rules').textContent='';byId('policies').textContent='';byId('nodes').textContent='';(c.upstreams||[]).forEach(node);(c.policies||[]).forEach(policy);(c.rules||[]).forEach(rule);refresh();byId('fallback').value=targetId(c.default||'direct');
- lockConfig(false);
+ byId('outboundMode').value=c.outbound_mode||'rules';
+ byId('globalOutbound').value=c.global_outbound?targetId(c.global_outbound):'';
+ updateMode();lockConfig(false);
 }
 byId('newPolicy').onclick=()=>policy();byId('newNode').onclick=()=>node();byId('newRule').onclick=()=>rule();
 byId('settings').onsubmit=async e=>{
@@ -374,7 +394,11 @@ byId('settings').onsubmit=async e=>{
   invalid.focus();invalid.reportValidity();return;
  }
  const submit=e.submitter||document.querySelector('button[type=submit]');submit.disabled=true;const out=byId('result');out.textContent='正在应用…';
- try{const config={enabled:byId('enabled').checked,devices:byId('devices').value.trim().split(/\s+/).filter(Boolean),upstreams:rows('nodes'),rules:rows('rules'),default:outbound(byId('fallback'))};
+ try{const config={enabled:byId('enabled').checked,upstreams:rows('nodes'),rules:rows('rules'),default:outbound(byId('fallback'))};
+ config.outbound_mode=byId('outboundMode').value;
+ const global=byId('globalOutbound');
+ if(global.value)config.global_outbound=outbound(global);
+ else if(config.outbound_mode==='global'){selectTab(byId('tab-general'));global.focus();throw Error('请为全局代理选择节点或策略。');}
  const policies=policyRows();if(policies.length)config.policies=policies;
  const port=byId('listenPort').valueAsNumber;
  if(port===7893){selectTab(byId('tab-general'));byId('listenPort').focus();throw Error('7893 已保留给透明代理，请选择其他端口。');}

@@ -7,7 +7,7 @@ use std::path::Path;
 #[cfg(target_os = "linux")]
 mod server;
 use anyhow::{Context, Result, bail, ensure};
-use config::Config;
+use config::{Config, OutboundMode};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -72,18 +72,21 @@ async fn execute() -> Result<()> {
             cfg.validate()?;
             ensure!(cfg.enabled, "disabled");
         }
-        "devices" => {
+        "run-mode" => {
             cfg.validate()?;
-            for net in cfg.devices {
-                if net.addr().is_ipv4() {
-                    println!("{}", net.trunc());
+            println!(
+                "{}",
+                match (cfg.enabled, cfg.outbound_mode) {
+                    (false, _) => "disabled",
+                    (true, OutboundMode::Direct) => "bypass",
+                    (true, _) => "proxy",
                 }
-            }
+            );
         }
         #[cfg(target_os = "linux")]
         "serve" => {
             ensure!(
-                cfg.enabled && args.len() == 5,
+                cfg.enabled && cfg.outbound_mode != OutboundMode::Direct && args.len() == 5,
                 "enabled configuration, LAN, interface and readiness path required"
             );
             server::run(cfg, &args[2], &args[3], &args[4]).await?;
