@@ -90,6 +90,7 @@ apply_rules() {
  [ -n "$devices" ] || [ -s "$run/ipv6-rules" ] || return 0
  iface=$(nvram get lan_ifname); lan=$(nvram get lan_ipaddr)
  [ -n "$iface" ] && [ -n "$lan" ] || return 1
+ modprobe xt_TPROXY || return 1
  touch "$run/firewall" || return 1
  apply_v6 || return 1
  [ -n "$devices" ] || return 0
@@ -97,7 +98,6 @@ apply_rules() {
   echo 'Kaldor routing resources already in use' >&2; return 1
  fi
  touch "$run/firewall4" || return 1
- modprobe xt_TPROXY || return 1
  ip route add local default dev lo proto 222 table "$table" || return 1
  ip rule add pref "$pref" fwmark "$mark" table "$table" || return 1
  iptables -t mangle -N AXPROXY_LAN || return 1
