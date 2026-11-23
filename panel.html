@@ -230,7 +230,7 @@ function updateMode(){
  const mode=byId('outboundMode').value;
  byId('globalField').hidden=mode!=='global';
  byId('modeHint').textContent={
-  direct:'透明流量和 DNS 由路由器直接转发。手动代理端口关闭，请将客户端改为直接连接。',
+  direct:'主 LAN 流量和 DNS 按系统路由转发。通过代理端口访问的请求直连目标，可在活动连接和访问日志中查看。',
   global:'主 LAN 所有设备的公网 TCP、UDP 和 DNS 均使用所选节点或策略。',
   rules:'主 LAN 所有设备的公网 TCP、UDP 和 DNS 按分流规则依次匹配，未命中时使用规则兜底出口。'
  }[mode];
@@ -376,7 +376,7 @@ function lockConfig(locked){
 async function load(){
  const [r,s]=await Promise.all([fetch('/axproxy-state.cgi',{cache:'no-store'}),fetch('/axproxy-status.cgi',{cache:'no-store'})]);
  if(!r.ok||!s.ok)throw Error('无法读取配置，请重新登录管理页。');
- const c=await r.json();const status=(await s.text()).trim();byId('status').dataset.state=status;byId('status').textContent=({running:'运行中',bypass:'直连中',degraded:'透明路由异常',stopped:'已停止',uninstalled:'未安装'}[status]||'状态未知');
+ const c=await r.json();const status=(await s.text()).trim();byId('status').dataset.state=status;byId('status').textContent=({running:'运行中',degraded:'透明路由异常',stopped:'已停止',uninstalled:'未安装'}[status]||'状态未知');
  byId('listenPort').value=c.listen_port??6000;byId('enabled').checked=c.enabled;
  byId('rules').textContent='';byId('policies').textContent='';byId('nodes').textContent='';(c.upstreams||[]).forEach(node);(c.policies||[]).forEach(policy);(c.rules||[]).forEach(rule);refresh();byId('fallback').value=targetId(c.default||'direct');
  byId('outboundMode').value=c.outbound_mode||'rules';

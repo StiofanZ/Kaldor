@@ -30,7 +30,6 @@ struct Service {
     reserved: Option<Ipv4Addr>,
     tcp_slots: Arc<Semaphore>,
     udp_slots: Arc<Semaphore>,
-    dns: Arc<dns::Resolver>,
 }
 impl Service {
     fn socket(&self, udp: bool, transparent: bool, addr: SocketAddr) -> Result<Socket> {
@@ -77,7 +76,6 @@ pub async fn run(cfg: Config, lan: &str, iface: &str, path: &str) -> Result<()> 
     );
     let port = cfg.listen_port();
     let service = Service {
-        dns: Arc::new(dns::Resolver::new()?),
         engine: Arc::new(Engine::new(cfg)?),
         lan,
         iface: iface.into(),
@@ -86,20 +84,20 @@ pub async fn run(cfg: Config, lan: &str, iface: &str, path: &str) -> Result<()> 
         udp_slots: Arc::new(Semaphore::new(256)),
     };
     let mut workers = tokio::task::JoinSet::new();
-    service.engine.start_probes(&mut workers)?;
-    let manual = service.listener(port, false)?;
-    workers.spawn(accept(manual, service.clone(), false));
-    {
-        let tcp = service.listener(TRANSPARENT_PORT, true)?;
-        workers.spawn(accept(tcp, service.clone(), true));
-        let u = service.datagram(TRANSPARENT_PORT, true)?;
-        let s = service.clone();
-        workers.spawn(async move { udp::transparent(u, s).await });
-    }
     let directory = std::path::Path::new(path)
         .parent()
         .context("missing runtime directory")?;
-    ipv6::start(&service, directory, &mut workers)?;
+    let manual = service.listener(port, false)?;
+    workers.spawn(accept(manual, service.clone(), None));
+    if service.engine.cfg.outbound_mode != crate::config::OutboundMode::Direct {
+        service.engine.start_probes(&mut workers)?;
+        let dns = Arc::new(dns::Resolver::new()?);
+        let tcp = service.listener(TRANSPARENT_PORT, true)?;
+        workers.spawn(accept(tcp, service.clone(), Some(dns.clone())));
+        let u = service.datagram(TRANSPARENT_PORT, true)?;
+        workers.spawn(udp::transparent(u, service.clone(), dns.clone()));
+        ipv6::start(&service, directory, &mut workers, dns)?;
+    }
     let activity = service.engine.activity.clone();
     let socket = crate::activity::Activity::listener(directory)?;
     workers.spawn(activity.serve(socket));
@@ -121,8 +119,8 @@ pub async fn run(cfg: Config, lan: &str, iface: &str, path: &str) -> Result<()> 
     std::fs::remove_file(path)?;
     result
 }
-async fn accept(listener: TcpListener, s: Service, transparent: bool) -> Result<()> {
-    let slots = if transparent {
+async fn accept(listener: TcpListener, s: Service, dns: Option<Arc<dns::Resolver>>) -> Result<()> {
+    let slots = if dns.is_some() {
         s.tcp_slots.clone()
     } else {
         Arc::new(Semaphore::new(256))
@@ -133,16 +131,17 @@ async fn accept(listener: TcpListener, s: Service, transparent: bool) -> Result<
             continue;
         };
         let s = s.clone();
+        let dns = dns.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            if transparent {
+            if let Some(dns) = dns {
                 let dest = c.local_addr()?;
                 if dest.is_ipv6() && dest.port() == 53 {
-                    s.dns.tcp(&s, from, &mut c).await?;
+                    dns.tcp(&s, from, &mut c).await?;
                     return Ok(());
                 }
                 if dest == SocketAddr::from((s.lan, TRANSPARENT_PORT)) {
-                    s.dns.tcp(&s, from, &mut c).await?;
+                    dns.tcp(&s, from, &mut c).await?;
                     return Ok(());
                 }
                 let domain_routing = s.engine.cfg.outbound_mode

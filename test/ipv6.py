@@ -87,7 +87,7 @@ def verify(root, command, spawn, wait, client, wan, sing, conf, control, activit
     assert get(PHONE)==SERVER and get(TEMP)==SERVER
     cfg.update(outbound_mode="direct")
     control("configure",conf("bypass-v6.json",cfg))
-    assert control("status")=="bypass"
+    assert control("status")=="running"
     assert get(PHONE)==PHONE and get(TEMP)==TEMP
     control("stop")
     assert "AXPROXY6_LAN" not in command("ip6tables","-t","mangle","-S")

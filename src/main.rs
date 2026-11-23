@@ -78,7 +78,7 @@ async fn execute() -> Result<()> {
                 "{}",
                 match (cfg.enabled, cfg.outbound_mode) {
                     (false, _) => "disabled",
-                    (true, OutboundMode::Direct) => "bypass",
+                    (true, OutboundMode::Direct) => "manual",
                     (true, _) => "proxy",
                 }
             );
@@ -86,7 +86,7 @@ async fn execute() -> Result<()> {
         #[cfg(target_os = "linux")]
         "serve" => {
             ensure!(
-                cfg.enabled && cfg.outbound_mode != OutboundMode::Direct && args.len() == 5,
+                cfg.enabled && args.len() == 5,
                 "enabled configuration, LAN, interface and readiness path required"
             );
             server::run(cfg, &args[2], &args[3], &args[4]).await?;

@@ -151,13 +151,14 @@ def verify(root, command, spawn, wait, client, wan, sing, conf, control, activit
             for proto in ("udp","tcp"):
                 assert lookup(source, WAN, proto) == expected, (mode, source, proto)
         if mode == "direct":
-            assert control("status") == "bypass"
-            assert not (root/"runtime/pid").exists()
+            control("firewall")
+            assert control("status") == "running"
             for args in [("iptables","-t","mangle","-S"),("iptables","-t","nat","-S"),("ip6tables","-t","mangle","-S")]:
                 assert "AXPROXY" not in command(*args)
             for family in ("-4","-6"):
                 assert "10891:" not in command("ip",family,"rule","show")
-            assert ":6000 " not in command("ss","-ltn")
+            assert ":6000 " in command("ss","-ltn")
+            assert ":7893 " not in command("ss","-ltun")
     print("DoH via AnyTLS only, UDP/TCP router and external DNS, reverse NAT, all LAN sources, global/bypass/rules switches, TC retry and TLS failure PASS", flush=True)
 
 

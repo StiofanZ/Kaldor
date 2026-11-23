@@ -15,6 +15,7 @@ pub(super) fn start(
     service: &Service,
     dir: &Path,
     workers: &mut tokio::task::JoinSet<Result<()>>,
+    dns: Arc<dns::Resolver>,
 ) -> Result<()> {
     let cfg = &service.engine.cfg;
     let mut selectors = BTreeMap::new();
@@ -59,9 +60,9 @@ pub(super) fn start(
         let mut instance = service.clone();
         instance.reserved = reserved;
         let listener = TcpListener::from_std(tcp.into())?;
-        workers.spawn(accept(listener, instance.clone(), true));
+        workers.spawn(accept(listener, instance.clone(), Some(dns.clone())));
         let datagrams = UdpSocket::from_std(udp.into())?;
-        workers.spawn(udp::transparent(datagrams, instance));
+        workers.spawn(udp::transparent(datagrams, instance, dns.clone()));
         use std::fmt::Write;
         writeln!(plan, "{kind} {selector} {}", local.port())?;
     }

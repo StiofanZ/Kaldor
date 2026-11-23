@@ -130,7 +130,7 @@ stop() {
   for i in 1 2 3 4 5; do running || break; sleep 1; done
   if running; then kill -KILL "$pid" || return 1; fi
  fi
- rm -f "$run/pid" "$run/ready" "$run/routing-error" "$run/bypass"
+ rm -f "$run/pid" "$run/ready" "$run/routing-error"
 }
 # fd 3 reports startup to launch(). The supervisor owns the worker until exit.
 supervise() {
@@ -167,8 +167,7 @@ launch() {
  mode=$("$1" run-mode "$2") || return 1
  case "$mode" in
   disabled) return 0;;
-  bypass) touch "$run/bypass"; return $?;;
-  proxy) ;;
+  manual|proxy) ;;
   *) return 1;;
  esac
  lan=$(nvram get lan_ipaddr) && iface=$(nvram get lan_ifname) || return 1
@@ -181,7 +180,9 @@ launch() {
    supervise "$1" "$2" "$lan" "$iface"
   ) &
  )
- if [ "$result" = ready ] && running && apply_rules; then return 0; fi
+ if [ "$result" = ready ] && running; then
+  if [ "$mode" = manual ] || apply_rules; then return 0; fi
+ fi
  stop
  return 1
 }
@@ -216,11 +217,12 @@ case "$1" in
   fi;;
  firewall)
   if running; then
-   apply_rules || { touch "$run/routing-error"; clean_rules; exit 1; }
+   mode=$("$bin" run-mode "$cfg") || exit 1
+   if [ "$mode" = proxy ]; then apply_rules; else clean_rules; fi || { touch "$run/routing-error"; clean_rules; exit 1; }
    rm -f "$run/routing-error"
   else clean_rules; fi;;
  view) "$bin" view "$cfg";;
- status) if [ -e "$run/routing-error" ]; then echo degraded; elif running && [ -s "$run/ready" ]; then echo running; elif [ -f "$run/bypass" ]; then echo bypass; else echo stopped; fi;;
+ status) if [ -e "$run/routing-error" ]; then echo degraded; elif running && [ -s "$run/ready" ]; then echo running; else echo stopped; fi;;
  page) "$bin" page;;
  *) exit 2;;
 esac

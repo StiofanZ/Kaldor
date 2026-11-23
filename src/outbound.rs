@@ -143,8 +143,10 @@ impl Engine {
             "direct".into(),
             Adapter::Standard(Box::new(DirectAdapter::new())),
         );
-        for u in &cfg.upstreams {
-            nodes.insert(u.name.clone(), adapter(u)?);
+        if cfg.outbound_mode != crate::config::OutboundMode::Direct {
+            for u in &cfg.upstreams {
+                nodes.insert(u.name.clone(), adapter(u)?);
+            }
         }
         Ok(Self {
             policies: crate::policy::Policies::new(&cfg),

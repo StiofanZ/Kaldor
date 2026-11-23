@@ -163,6 +163,13 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
                         "import socket,sys;s=socket.socket(2,2);s.settimeout(5);s.bind((sys.argv[1],0));"
                         "s.sendto(b'udp',('198.51.100.2',18482));print(s.recv(64).decode())",source)
                     assert result == "udp/" + (expected or source)
+                if mode == "direct":
+                    assert activity()["recent"] == []
+                    for proxy in ("http","socks5h"):
+                        assert get(18481,"--noproxy","","-x",f"{proxy}://192.0.2.1:6000") == "198.51.100.1"
+                    assert command(*client,sys.executable,__file__,"socks-udp") == "udp/198.51.100.1"
+                    rows = {(r["ingress"], r["transport"], r["outbound"], r["result"]) for r in activity()["recent"]}
+                    assert rows == {(i,t,"direct","opened") for i,t in [("HTTP","TCP"),("SOCKS5","TCP"),("SOCKS5","UDP")]}
                 if mode == "global":
                     assert get(18481,"--noproxy","","-x","http://192.0.2.1:6000") == expected
             print("direct and global TCP/UDP for both LAN clients, saved reject rule bypassed PASS",flush=True)
@@ -296,7 +303,7 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
         finally:
             tls.communicate(input=b'x',timeout=5)
     print("transparent Host and TLS SNI without rules, active and recent records agree PASS",flush=True)
-    control("configure",conf("observe.json",{"enabled":True,"default":"direct"}))
+    control("configure",conf("observe.json",{"enabled":True,"outbound_mode":"direct","default":"reject"}))
     assert activity()["recent"] == [], "restart retained access history"
     with subprocess.Popen([*client, sys.executable, "-c",
         "import socket,sys;s=socket.create_connection(('192.0.2.1',6000),4);"
