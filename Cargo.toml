@@ -16,6 +16,7 @@ hyper = { version = "1", features = ["client", "server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 ipnet = { version = "2", features = ["serde"] }
 libc = "0.2"
+ring = "0.17"
 meow-anytls = { version = "=0.29.0", default-features = false }
 meow-common = { version = "=0.29.0", default-features = false }
 meow-proxy = { version = "=0.29.0", default-features = false, features = ["vless-vision", "mux"] }

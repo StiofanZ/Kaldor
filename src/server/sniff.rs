@@ -15,7 +15,7 @@ fn field<'a>(src: &mut &'a [u8], count: usize) -> Option<&'a [u8]> {
     let n = number(src, count)?;
     part(src, n)
 }
-fn sni(mut hello: &[u8]) -> Option<String> {
+pub(super) fn sni(mut hello: &[u8]) -> Option<String> {
     part(&mut hello, 34)?;
     field(&mut hello, 1)?;
     field(&mut hello, 2)?;

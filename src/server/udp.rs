@@ -119,7 +119,8 @@ async fn forward(
     } else {
         "透明代理"
     };
-    let (upstream, _session) = service.engine.udp(src, &target, ingress).await?;
+    let mut probe = manual.is_none().then(super::quic::Probe::default);
+    let (upstream, session) = service.engine.udp(src, &target, ingress).await?;
     let (socket, prefix) = match manual {
         Some(socket) => {
             let mut prefix = vec![0; 3];
@@ -148,6 +149,12 @@ async fn forward(
                     packet = outgoing.recv() => {
                         let Some(packet) = packet else { return Ok(()) };
                         timeout(Duration::from_secs(12), upstream.send(&packet)).await??;
+                        if let Some(observer) = &mut probe {
+                            if let Some(name) = observer.inspect(&packet) {
+                                session.set_domain(&name);
+                            }
+                            if observer.finished() { probe = None; }
+                        }
                     }
                     _ = tokio::time::sleep(Duration::from_secs(60)) => return Ok(()),
                 }

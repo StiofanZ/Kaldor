@@ -244,6 +244,22 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     # A transparent flow without domain rules must acquire its displayed name
     # while forwarding, with the same destination and egress in both views.
     control("configure",conf("observe-transparent.json",{"enabled":True,"default":"direct","devices":["192.0.2.2/32"]}))
+    # An independent QUIC implementation must complete a transfer through TPROXY.
+    # Use the literal peer address so the only source of peer.test is ClientHello.
+    hy_server={"type":"hysteria2","listen":"198.51.100.2","listen_port":18443,
+               "users":[{"password":secret}],"tls":{"enabled":True,"certificate_path":str(root/"ca.pem"),"key_path":str(root/"key")}}
+    hy_client={"type":"hysteria2","server":"198.51.100.2","server_port":18443,
+               "password":secret,"tls":{"enabled":True,"server_name":"peer.test","certificate_path":str(root/"ca.pem")}}
+    spawn(*wan,sing,"run","-c",str(conf("quic-server.json",{"inbounds":[hy_server],"outbounds":[{"type":"direct"}]})))
+    wait(lambda: ":18443" in command(*wan,"ss","-uln"))
+    spawn(*client,sing,"run","-c",str(conf("quic-client.json",{"inbounds":[{"type":"socks","listen":"127.0.0.1","listen_port":18108}],"outbounds":[hy_client]})))
+    wait(lambda: ":18108" in command(*client,"ss","-ltn"))
+    assert get(18480,"--noproxy","","-x","socks5h://127.0.0.1:18108")=="198.51.100.2"
+    q=activity()
+    quic_rows=[row for source,row in q["active"] if source.startswith("192.0.2.2:") and row["port"]==18443]
+    assert len(quic_rows)==1 and quic_rows[0] in q["recent"]
+    assert (quic_rows[0]["target"],quic_rows[0]["transport"],quic_rows[0]["outbound"])==("peer.test","UDP","direct")
+    print("real QUIC transfer: transparent UDP SNI and outbound match in active and recent PASS",flush=True)
     with subprocess.Popen([*client,sys.executable,"-c",
         "import socket,sys;s=socket.create_connection(('198.51.100.2',80),4);"
         "s.sendall(b'GET / HTTP/1.1\\r\\nHo');s.sendall(b'st: observe.example\\r\\n\\r\\n');"
@@ -265,7 +281,7 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
         try:
             assert tls.stdout.readline().strip()==b'ready'
             snapshot=activity()
-            rows=[row for source,row in snapshot["active"] if source.startswith("192.0.2.2:") and row["target"]=="peer.test"]
+            rows=[row for source,row in snapshot["active"] if source.startswith("192.0.2.2:") and row["target"]=="peer.test" and row["transport"]=="TCP" and row["port"]==8443]
             assert len(rows)==1 and rows[0] in snapshot["recent"]
             assert (rows[0]["port"],rows[0]["transport"],rows[0]["outbound"])==(8443,"TCP","direct")
         finally:
