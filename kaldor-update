@@ -8,6 +8,7 @@ case "${1:-}" in check|upgrade) action=$1;; *) fail 'usage: kaldor-update check|
 base=https://github.com/StiofanZ/Kaldor/releases
 root=${AXPROXY_HOME:-/jffs/axproxy}
 ctl=${AXPROXY_CTL:-/usr/sbin/kaldorctl}
+if [ -z "${AXPROXY_CTL:-}" ] && [ ! -x "$ctl" ]; then ctl=/jffs/kaldor/kaldorctl; fi
 [ -x "$ctl" ] || fail 'component loader missing'
 tmp=/tmp/kaldor-release.$$
 mkdir "$tmp" || fail 'cannot create private staging directory'

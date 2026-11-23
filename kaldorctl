@@ -59,6 +59,6 @@ case "${1:-}" in
   exit 1;;
  start|stop|reaped|firewall|status|page|view|configure)
   if [ -n "$current" ]; then invoke "$current" "$@"; exit; fi
-  case "$1" in status) echo uninstalled;; page) echo '尚未安装 Kaldor 网络代理组件。';; view) echo '{}';; configure) exit 1;; esac;;
+  case "$1" in status) echo uninstalled;; page) echo '尚未安装网络代理内核 Kaldor。';; view) echo '{}';; configure) exit 1;; esac;;
  *) echo 'install | rollback | configure | start | stop | firewall | view | status' >&2; exit 2;;
 esac
