@@ -27,6 +27,8 @@ addEventListener('load',async ()=>{
    await new Promise(resolve=>setTimeout(resolve,10));
   assert(!document.querySelector('#settings').inert,'load: '+document.querySelector('#result').textContent);
   const port=document.querySelector('#listenPort');
+  assert(port.labels[0].textContent.trim()==='代理端口','port label');
+  assert(document.documentElement.scrollWidth<=innerWidth,'horizontal overflow');
   assert(port.value==='6000','default listen port');
   port.value='65536';assert(!port.checkValidity(),'port upper bound');
   port.value='16000';
@@ -71,12 +73,13 @@ with tempfile.TemporaryDirectory() as directory:
     page = Path(directory) / "panel.html"
     page.write_text(panel.replace("<script>", mock + "<script>", 1)
                     .replace("</html>", scenario + "</html>"))
-    output = subprocess.check_output([
-        sys.argv[1], "--headless", "--disable-gpu", "--disable-background-networking",
-        "--disable-extensions", "--no-first-run", "--disable-sync",
-        "--user-data-dir=" + str(Path(directory) / "profile"), "--dump-dom",
-        "--virtual-time-budget=2000", page.as_uri()
-    ], text=True, timeout=45)
-    if "<pre>PANEL_PASS</pre>" not in output:
-        sys.exit(output.rsplit("<pre>", 1)[-1][:240])
+    for width in (760, 390):
+        output = subprocess.check_output([
+            sys.argv[1], f"--window-size={width},700", "--headless", "--disable-gpu", "--disable-background-networking",
+            "--disable-extensions", "--no-first-run", "--disable-sync",
+            "--user-data-dir=" + str(Path(directory) / "profile"), "--dump-dom",
+            "--virtual-time-budget=2000", page.as_uri()
+        ], text=True, timeout=45)
+        if "<pre>PANEL_PASS</pre>" not in output:
+            sys.exit(output.rsplit("<pre>", 1)[-1][:240])
     print("Management page rename, reference protection and default switching, transport and rule ordering PASS")
