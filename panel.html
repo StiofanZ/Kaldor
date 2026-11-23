@@ -6,19 +6,22 @@
 :root{color-scheme:dark;--bg:#18232b;--panel:#22323d;--input:#17262f;--edge:#415562;--text:#f0f5f7;--muted:#b6c6cf;--accent:#77d6d1}
 *{box-sizing:border-box}
 body{margin:0;padding:18px;background:var(--bg);color:var(--text);font:14px/1.5 "Source Sans 3","PingFang SC","Microsoft YaHei",sans-serif}
-h1,h2,p{margin:0}h1{font-size:24px;font-weight:650;line-height:1.25}h2{font-size:16px}
-header,.section-head,.release-line,.entry,.actions,.row-tools,.service-state{display:flex;align-items:center;gap:10px}
-header,.section-head,.release-line{justify-content:space-between;flex-wrap:wrap}
+h1,p{margin:0}h1{font-size:24px;font-weight:650;line-height:1.25}
+header,.section-head,.entry,.actions,.row-tools,.service-state{display:flex;align-items:center;gap:10px}
+header,.section-head{justify-content:space-between;flex-wrap:wrap}
 header{padding:3px 0 14px;border-bottom:2px solid var(--accent)}
 .service-state{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
 #status{padding:2px 9px;border:1px solid var(--edge);border-radius:12px}
 #status[data-state=running]{color:#a5eaca;border-color:#4e826d}
 #status[data-state=degraded]{color:#ffcf87;border-color:#956e40}
-#release{margin:10px 0 14px;color:var(--muted)}
-#release h2{font-size:14px;font-weight:500}
+[hidden]{display:none!important}
+.tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;margin:14px 0}
+.tabs button{min-width:0;padding:8px 3px;border-color:transparent;background:transparent;color:var(--muted)}
+.tabs button[aria-selected=true]{background:var(--panel);border-color:var(--edge);box-shadow:inset 0 -2px var(--accent);color:var(--text)}
+#release{color:var(--muted)}
 #releaseResult:not(:empty){display:block;margin-top:6px}
 .card{background:var(--panel);border:1px solid var(--edge);border-radius:8px;padding:14px 16px;margin-bottom:12px}
-.section-head{margin-bottom:10px}
+.section-head{justify-content:flex-end;margin-bottom:10px}
 .fields,fieldset{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px}
 fieldset{min-width:0;margin:10px 0 0;padding:12px;background:var(--bg);border:1px solid var(--edge);border-radius:6px}
 label{display:flex;flex-direction:column;gap:4px;min-width:0;color:var(--text)}
@@ -36,7 +39,7 @@ button:hover:enabled{background:#3c5562}button:disabled{opacity:.55;cursor:defau
 .entry{flex-wrap:wrap;padding-bottom:8px;border-bottom:1px solid var(--edge)}
 .entry strong{margin-right:auto;overflow-wrap:anywhere}
 .row-tools{flex-wrap:wrap;gap:6px}.row-tools button{font-size:13px}
-.actions{position:sticky;bottom:0;z-index:1;padding:10px 0;background:var(--bg);border-top:1px solid var(--edge)}
+.actions{padding:10px 0;background:var(--bg);border-top:1px solid var(--edge)}
 button[type=submit]{background:var(--accent);color:#102d31;border-color:var(--accent);font-weight:650}
 button[type=submit]:hover:enabled{background:#9be6e0}
 output{overflow-wrap:anywhere}
@@ -46,13 +49,19 @@ output{overflow-wrap:anywhere}
 }
 </style>
 <header><h1>网络代理</h1><div class="service-state"><span>内核：Kaldor vCOMPONENT_VERSION</span><output id="status" aria-live="polite"></output></div></header>
-<section id="release" data-phase="RELEASE_PHASE" data-version="RELEASE_VERSION" data-installed="COMPONENT_VERSION">
-<div class="release-line"><h2>组件更新</h2><div class="row-tools"><button type="button" id="checkRelease">检查新版本</button>
-<button type="button" id="installRelease" hidden>升级组件</button></div></div>
+<div class="tabs" role="tablist" aria-label="网络代理">
+<button type="button" role="tab" id="tab-general" aria-controls="general" aria-selected="true">代理设置</button>
+<button type="button" role="tab" id="tab-nodes" aria-controls="nodePanel" aria-selected="false" tabindex="-1">上游节点</button>
+<button type="button" role="tab" id="tab-rules" aria-controls="rulePanel" aria-selected="false" tabindex="-1">分流规则</button>
+<button type="button" role="tab" id="tab-release" aria-controls="release" aria-selected="false" tabindex="-1">组件更新</button>
+</div>
+<section class="card" id="release" role="tabpanel" aria-labelledby="tab-release" hidden data-phase="RELEASE_PHASE" data-version="RELEASE_VERSION" data-installed="COMPONENT_VERSION">
+<div class="row-tools"><button type="button" id="checkRelease">检查新版本</button>
+<button type="button" id="installRelease" hidden>升级组件</button></div>
 <output id="releaseResult" role="status"></output></section>
-<form id="settings" inert>
-<section class="card">
-<div class="section-head"><h2>代理设置</h2><label class="toggle"><input id="enabled" type="checkbox">启用代理</label></div>
+<form id="settings" novalidate inert>
+<section class="card" id="general" role="tabpanel" aria-labelledby="tab-general">
+<div class="section-head"><label class="toggle"><input id="enabled" type="checkbox">启用代理</label></div>
 <div class="fields">
 <div class="port-field"><label for="listenPort">代理端口<input id="listenPort" type="number" min="1" max="65535" step="1" required aria-describedby="portHint"></label>
 <small id="portHint">HTTP 和 SOCKS5 均使用此端口，默认 6000。更改后请同步更新客户端。</small></div>
@@ -60,14 +69,40 @@ output{overflow-wrap:anywhere}
 <label class="wide" for="devices">透明代理设备<textarea id="devices" placeholder="每行一个 IPv4 网段，单台设备用 /32" aria-describedby="devicesHint"></textarea></label>
 <small class="wide" id="devicesHint">所选设备的公网 IPv4 TCP 和 UDP 流量进入代理。留空时只启用手动代理。</small>
 </div></section>
-<section class="card"><div class="section-head"><h2>上游节点</h2><button type="button" id="newNode">添加节点</button></div>
+<section class="card" id="nodePanel" role="tabpanel" aria-labelledby="tab-nodes" hidden><div class="section-head"><button type="button" id="newNode">添加节点</button></div>
 <div id="nodes"></div><p class="hint" id="noNodes">尚未添加上游节点。</p></section>
-<section class="card"><div class="section-head"><h2>分流规则</h2><button type="button" id="newRule">添加规则</button></div>
+<section class="card" id="rulePanel" role="tabpanel" aria-labelledby="tab-rules" hidden><div class="section-head"><button type="button" id="newRule">添加规则</button></div>
 <p class="hint">按从上到下的顺序匹配，首条满足全部条件的规则生效。未命中时使用默认出口。</p><div id="rules"></div></section>
 <div class="actions"><button type="submit">保存并应用</button><output role="status" id="result"></output></div></form>
 <script>
 'use strict';
 const byId=id=>document.getElementById(id);
+const tabs=Array.from(document.querySelectorAll('[role="tab"]'));
+function selectTab(active){
+ for(const tab of tabs){
+  const selected=tab===active;
+  tab.tabIndex=selected?0:-1;
+  tab.setAttribute('aria-selected',String(selected));
+  byId(tab.getAttribute('aria-controls')).hidden=!selected;
+ }
+ byId('settings').hidden=active.getAttribute('aria-controls')==='release';
+}
+for(const [index,tab] of tabs.entries()){
+ tab.onclick=()=>selectTab(tab);
+ tab.onkeydown=event=>{
+  const next={ArrowLeft:(index+tabs.length-1)%tabs.length,ArrowRight:(index+1)%tabs.length,Home:0,End:tabs.length-1}[event.key];
+  if(next===undefined)return;
+  event.preventDefault();selectTab(tabs[next]);tabs[next].focus();
+ };
+}
+// The firmware and this panel share an origin. Measure the body rather than
+// the viewport so a taller previous tab cannot prevent the frame from shrinking.
+const frame=window.frameElement;
+if(frame && window.ResizeObserver){
+ const fit=()=>{frame.style.height=Math.ceil(document.body.getBoundingClientRect().height)+'px';};
+ new ResizeObserver(fit).observe(document.body,{box:'border-box'});
+ fit();
+}
 const release=byId('release'),checkRelease=byId('checkRelease'),installRelease=byId('installRelease'),releaseResult=byId('releaseResult');
 let pollTimer;
 function renderRelease(info){
@@ -201,12 +236,21 @@ async function load(){
  byId('settings').inert=false;
 }
 byId('newNode').onclick=()=>node();byId('newRule').onclick=()=>rule();
-byId('settings').onsubmit=async e=>{e.preventDefault();if(byId('settings').inert)return;const submit=e.submitter||document.querySelector('button[type=submit]');submit.disabled=true;const out=byId('result');out.textContent='正在应用…';
+byId('settings').onsubmit=async e=>{
+ e.preventDefault();
+ const form=e.currentTarget;
+ if(form.inert)return;
+ const invalid=form.querySelector('input:invalid,select:invalid,textarea:invalid');
+ if(invalid){
+  selectTab(byId(invalid.closest('[role="tabpanel"]').getAttribute('aria-labelledby')));
+  invalid.focus();invalid.reportValidity();return;
+ }
+ const submit=e.submitter||document.querySelector('button[type=submit]');submit.disabled=true;const out=byId('result');out.textContent='正在应用…';
  try{const config={enabled:byId('enabled').checked,devices:byId('devices').value.trim().split(/\s+/).filter(Boolean),upstreams:rows('nodes'),rules:rows('rules'),default:outbound(byId('fallback'))};
  const port=byId('listenPort').valueAsNumber;
- if(port===7893)throw Error('7893 已保留给透明代理，请选择其他端口。');
+ if(port===7893){selectTab(byId('tab-general'));byId('listenPort').focus();throw Error('7893 已保留给透明代理，请选择其他端口。');}
  if(port!==6000)config.listen_port=port;
- const used=new Set(['direct','reject']);for(const n of config.upstreams){if(used.has(n.name))throw Error('节点名称重复或为保留名称：'+n.name);used.add(n.name);}
+ const used=new Set(['direct','reject']);for(const n of config.upstreams){if(used.has(n.name)){selectTab(byId('tab-nodes'));throw Error('节点名称重复或为保留名称：'+n.name);}used.add(n.name);}
  byId('settings').inert=true;
  const r=await fetch('/axproxy-save.cgi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});
  if(!r.ok||!(await r.json()).ok)throw Error('应用失败，请检查监听端口是否被占用，以及节点和分流配置。');try{await load();}catch{out.textContent='已保存，状态读取失败，请刷新页面。';return;}out.textContent='已应用';}

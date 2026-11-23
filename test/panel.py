@@ -1,8 +1,11 @@
 """Exercise the embedded management page with local headless Chromium."""
+from html import escape
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 
 panel = (Path(__file__).resolve().parents[1] / "panel.html").read_text()
 mock = """<script>
@@ -20,18 +23,30 @@ window.fetch=async (url,opts)=>{
 </script>"""
 scenario = """<script>
 addEventListener('load',async ()=>{
- const result=document.createElement('pre');document.body.append(result);
  try {
   const assert=(ok,msg)=>{if(!ok)throw Error(msg);};
   for(let i=0;document.querySelector('#settings').inert && i<100;i++)
    await new Promise(resolve=>setTimeout(resolve,10));
   assert(!document.querySelector('#settings').inert,'load: '+document.querySelector('#result').textContent);
+  const form=document.getElementById('settings');
+  const tab=id=>document.getElementById('tab-'+id);
+  const active=id=>tab(id).getAttribute('aria-selected')==='true' &&
+   document.querySelectorAll('[role=tabpanel]:not([hidden])').length===1 &&
+   document.getElementById(tab(id).getAttribute('aria-controls')).getClientRects().length>0;
+  assert(active('general'),'initial tab');
+  tab('general').dispatchEvent(new KeyboardEvent('keydown',{key:'End'}));
+  assert(active('release') && document.activeElement===tab('release') && form.hidden,'keyboard navigation');
+  tab('release').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight'}));
+  assert(active('general') && !form.hidden,'keyboard wrap');
   const port=document.querySelector('#listenPort');
   assert(port.labels[0].textContent.trim()==='代理端口','port label');
   assert(document.documentElement.scrollWidth<=innerWidth,'horizontal overflow');
   assert(port.value==='6000','default listen port');
   port.value='65536';assert(!port.checkValidity(),'port upper bound');
-  port.value='16000';
+  tab('nodes').click();form.requestSubmit();
+  assert(active('general') && document.activeElement===port && !saved,'hidden invalid port');
+  port.value='16000';tab('nodes').click();
+  assert(active('nodes'),'nodes tab');
   const [east,west]=document.querySelectorAll('#nodes fieldset');
   const fallback=document.querySelector('#fallback');
   const rule=document.querySelector('[data-key=outbound]');
@@ -45,6 +60,7 @@ addEventListener('load',async ()=>{
   assert(!saved && fallback.value===west.id && rule.value===east.id,'staging the switch');
   click(east,'删除');click(west,'删除');
   assert(east.isConnected&&west.isConnected,'deleted referenced node');
+  tab('rules').click();assert(active('rules'),'rules tab');
   const [first,second]=document.querySelectorAll('#rules fieldset');
   const protocol=row=>row.querySelector('[data-key=network]');
   assert(protocol(first).value==='' && protocol(second).value==='udp','load rule transport');
@@ -52,6 +68,8 @@ addEventListener('load',async ()=>{
   click(first,'上移');assert(first.nextElementSibling===second,'move up');
   const suffix=first.querySelector('[data-key=domain_suffix]');
   suffix.value='.';assert(!suffix.checkValidity(),'invalid suffix accepted');
+  tab('general').click();form.requestSubmit();
+  assert(!saved && active('rules') && document.activeElement===suffix,'hidden invalid rule');
   suffix.value='example.org.';assert(suffix.checkValidity(),'absolute domain rejected');
   protocol(second).value='tcp';click(second,'上移');
   document.querySelector('#settings').requestSubmit();
@@ -59,27 +77,95 @@ addEventListener('load',async ()=>{
   assert(saved.listen_port===16000,'listen port missing from save');
   assert(saved.default==='west' && saved.rules[1].outbound==='renamed' && !('network' in saved.rules[1]) && saved.rules[0].network==='tcp' && saved.rules[0].outbound==='reject','wrong saved routing');
   assert(saved.upstreams[0].previous_name==='east' && !saved.upstreams[0].secret,'credential edit');
+  tab('release').click();assert(active('release') && form.hidden,'update tab');
   const check=document.getElementById('checkRelease'),install=document.getElementById('installRelease');
   await check.onclick();assert(action.component_action==='check'&&!install.hidden,'release check');
   window.confirm=()=>false;await install.onclick();assert(action.component_action==='check','cancelled upgrade');
   window.confirm=()=>true;await install.onclick();
   assert(action.component_action==='upgrade'&&action.version==='0.4.0'&&install.hidden,'selected release upgrade');
   assert(document.getElementById('releaseResult').textContent.includes('已完成'),'upgrade result');
-  result.textContent='PANEL_PASS';
- } catch(err){result.textContent='PANEL_FAIL '+err;}
+  navigator.sendBeacon('/result','PASS');
+ } catch(err){navigator.sendBeacon('/result',String(err));}
 });
 </script>"""
-with tempfile.TemporaryDirectory() as directory:
-    page = Path(directory) / "panel.html"
-    page.write_text(panel.replace("<script>", mock + "<script>", 1)
-                    .replace("</html>", scenario + "</html>"))
-    for width in (760, 390):
-        output = subprocess.check_output([
-            sys.argv[1], f"--window-size={width},700", "--headless", "--disable-gpu", "--disable-background-networking",
-            "--disable-extensions", "--no-first-run", "--disable-sync",
-            "--user-data-dir=" + str(Path(directory) / "profile"), "--dump-dom",
-            "--virtual-time-budget=2000", page.as_uri()
-        ], text=True, timeout=45)
-        if "<pre>PANEL_PASS</pre>" not in output:
-            sys.exit(output.rsplit("<pre>", 1)[-1][:240])
-    print("Management page rename, reference protection and default switching, transport and rule ordering PASS")
+# Model the same-origin frame shipped in the firmware, including its initial height.
+embedded = """<script>
+addEventListener('load', async ()=>{
+ const frame=document.querySelector('iframe'), child=frame.contentDocument;
+ const assert=(ok,msg)=>{if(!ok)throw Error(msg);};
+ const fitted=async ()=>{
+  for(let i=0;i<100;i++){
+   const height=Math.ceil(child.body.getBoundingClientRect().height);
+   if(Math.abs(frame.clientHeight-height)<=1 && child.scrollingElement.scrollHeight<=frame.clientHeight+1)
+    return frame.clientHeight;
+   await new Promise(resolve=>setTimeout(resolve,10));
+  }
+  throw Error('frame '+frame.clientHeight+' body '+child.body.getBoundingClientRect().height);
+ };
+ try{
+  const short=await fitted();
+  assert(short<700,'frame did not shrink on load');
+  child.getElementById('tab-rules').click();
+  for(let i=0;i<6;i++)child.getElementById('newRule').click();
+  const tall=await fitted();
+  assert(tall>innerHeight && tall>short,'long list did not expand');
+  scrollTo(0,document.scrollingElement.scrollHeight);
+  assert(scrollY>0 && frame.contentWindow.scrollY===0,'scroll owner');
+  child.getElementById('rules').lastElementChild.querySelector('.row-tools button:last-child').click();
+  assert(await fitted()<tall,'deleting a row did not shrink frame');
+  child.getElementById('tab-release').click();
+  assert(await fitted()<short && child.scrollingElement.scrollWidth<=frame.clientWidth,'short tab size');
+  navigator.sendBeacon('/result','PASS');
+ }catch(err){navigator.sendBeacon('/result',String(err));}
+});
+</script>"""
+class TestPage(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != "/":
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(self.server.page.encode())
+
+    def do_POST(self):
+        if self.path != "/result":
+            self.send_error(404)
+            return
+        self.server.result = self.rfile.read(int(self.headers["Content-Length"])).decode()
+        self.send_response(204)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+with tempfile.TemporaryDirectory() as directory, ThreadingHTTPServer(("127.0.0.1", 0), TestPage) as server:
+    view = panel.replace("<script>", mock + "<script>", 1)
+    pages = {
+        "standalone": view.replace("</html>", scenario + "</html>"),
+        "embedded": ('<!doctype html><meta charset="utf-8"><iframe style="display:block;width:98%;'
+                     'height:700px;border:0" srcdoc="' + escape(view, quote=True) + '"></iframe>' + embedded),
+    }
+    server.timeout = 1
+    for mode, html in pages.items():
+        server.page = html
+        for width in (760, 390):
+            server.result = None
+            browser = subprocess.Popen([
+                sys.argv[1], f"--window-size={width},700", "--headless", "--disable-gpu",
+                "--disable-background-networking", "--disable-extensions", "--no-first-run", "--disable-sync",
+                "--user-data-dir=" + str(Path(directory) / f"{mode}-{width}"),
+                f"http://127.0.0.1:{server.server_port}/",
+            ])
+            try:
+                deadline = time.monotonic() + 20
+                while server.result is None and time.monotonic() < deadline and browser.poll() is None:
+                    server.handle_request()
+                if server.result != "PASS":
+                    sys.exit(f"{mode} {width}: {server.result or 'browser timeout'}")
+                print(f"{mode} {width} PASS", flush=True)
+            finally:
+                browser.terminate()
+                browser.wait(timeout=10)
