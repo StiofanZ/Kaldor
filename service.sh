@@ -14,6 +14,12 @@ table=189
 pref=10891
 clean_rules() {
  [ -e "$run/firewall" ] || return 0
+ while iptables -t nat -C PREROUTING -j AXPROXY_DNS 2>/dev/null; do
+  iptables -t nat -D PREROUTING -j AXPROXY_DNS || return 1
+ done
+ if iptables -t nat -S AXPROXY_DNS >/dev/null 2>&1; then
+  iptables -t nat -F AXPROXY_DNS && iptables -t nat -X AXPROXY_DNS || return 1
+ fi
  while iptables -t mangle -C PREROUTING -j AXPROXY_LAN 2>/dev/null; do
   iptables -t mangle -D PREROUTING -j AXPROXY_LAN || return 1
  done
@@ -34,7 +40,7 @@ apply_rules() {
  [ -n "$devices" ] || return 0
  iface=$(nvram get lan_ifname); lan=$(nvram get lan_ipaddr)
  [ -n "$iface" ] && [ -n "$lan" ] || return 1
- if ip rule show | grep -q "^$pref:" || [ -n "$(ip route show table "$table" 2>/dev/null)" ] || iptables -t mangle -S AXPROXY_LAN >/dev/null 2>&1; then
+ if ip rule show | grep -q "^$pref:" || [ -n "$(ip route show table "$table" 2>/dev/null)" ] || iptables -t mangle -S AXPROXY_LAN >/dev/null 2>&1 || iptables -t nat -S AXPROXY_DNS >/dev/null 2>&1; then
   echo 'Kaldor routing resources already in use' >&2; return 1
  fi
  touch "$run/firewall" || return 1
@@ -43,6 +49,14 @@ apply_rules() {
  ip rule add pref "$pref" fwmark "$mark" table "$table" || return 1
  iptables -t mangle -N AXPROXY_LAN || return 1
  iptables -t mangle -A AXPROXY_LAN ! -i "$iface" -j RETURN || return 1
+ # DNS needs reverse NAT so replies retain the DNS server address chosen by the client.
+ iptables -t nat -N AXPROXY_DNS || return 1
+ for proto in udp tcp; do
+  iptables -t mangle -A AXPROXY_LAN -p "$proto" --dport 53 -j RETURN || return 1
+  for dev in $devices; do
+   iptables -t nat -A AXPROXY_DNS -i "$iface" -s "$dev" -p "$proto" --dport 53 -j DNAT --to-destination "$lan:7893" || return 1
+  done
+ done
  # Linux 4.4 on this model has no xt_addrtype. Include every local address
  # (including a public WAN address), broadcast and directly attached LAN prefix.
  local_routes=$(ip -4 route show table local) || return 1
@@ -60,6 +74,7 @@ apply_rules() {
    iptables -t mangle -A AXPROXY_LAN -s "$dev" -p "$proto" -j TPROXY --on-ip "$lan" --on-port 7893 --tproxy-mark "$mark" || return 1
   done
  done
+ iptables -t nat -I PREROUTING 1 -j AXPROXY_DNS || return 1
  iptables -t mangle -I PREROUTING 1 -j AXPROXY_LAN
 }
 stop() {

@@ -166,16 +166,18 @@ async fn forward(
     }
 }
 pub(super) async fn transparent(sock: UdpSocket, s: Service) -> Result<()> {
+    let sock = Arc::new(sock);
     let mut flows = Flows::new(s.clone(), None);
     let mut data = vec![0; 65535];
     loop {
         sock.readable().await?;
         match sock.try_io(Interest::READABLE, || receive(&sock, &mut data)) {
-            Ok((n, src, dst))
-                if dst != SocketAddr::from((s.lan, crate::config::TRANSPARENT_PORT)) =>
-            {
-                flows.feed(src, Target::from_socket(dst), &data[..n])
+            Ok((n, src, dst)) if dst == SocketAddr::from((s.lan, TRANSPARENT_PORT)) => {
+                if let Some(resolver) = s.device_dns(src) {
+                    resolver.udp(&s.engine, &sock, src, &data[..n]);
+                }
             }
+            Ok((n, src, dst)) => flows.feed(src, Target::from_socket(dst), &data[..n]),
             Err(e)
                 if e.kind() != io::ErrorKind::WouldBlock
                     && e.kind() != io::ErrorKind::InvalidData =>

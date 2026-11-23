@@ -145,6 +145,8 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
 
     def get(port,*flags):
         return command(*client,"curl","-fsS","--max-time","8",*flags,f"http://198.51.100.2:{port}/")
+    import dns
+    dns.verify(root, command, spawn, wait, client, wan, sing, conf, control, activity, peers[0], sing_conf)
     for p in peers:
         cfg={"enabled":True,"devices":["192.0.2.2/32"],"upstreams":[dict(name="node",**p)],"default":"node",
              "rules":[{"port":18481,"outbound":"reject"},{"domain_suffix":"blocked.example","outbound":"reject"}]}
@@ -367,6 +369,7 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     assert control("status")=="stopped"
     control("start");assert control("status")=="running"
     control("stop")
+    assert "AXPROXY_DNS" not in command("iptables","-t","nat","-S")
     assert "AXPROXY_LAN" not in command("iptables","-t","mangle","-S")
     assert "10891:" not in command("ip","rule","show")
     print("install, upgrade, checksum rejection, old program cleanup, firewall cleanup PASS")

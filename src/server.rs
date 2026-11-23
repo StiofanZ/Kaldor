@@ -1,3 +1,4 @@
+mod dns;
 mod http;
 mod quic;
 mod sniff;
@@ -25,8 +26,18 @@ struct Service {
     engine: Arc<Engine>,
     lan: Ipv4Addr,
     iface: Arc<str>,
+    dns: Option<Arc<dns::Resolver>>,
 }
 impl Service {
+    fn device_dns(&self, src: SocketAddr) -> Option<&Arc<dns::Resolver>> {
+        self.dns.as_ref().filter(|_| {
+            self.engine
+                .cfg
+                .devices
+                .iter()
+                .any(|net| net.contains(&src.ip()))
+        })
+    }
     fn socket(&self, udp: bool, transparent: bool, addr: SocketAddr) -> Result<Socket> {
         let (kind, proto) = if udp {
             (Type::DGRAM, Protocol::UDP)
@@ -65,6 +76,10 @@ pub async fn run(cfg: Config, lan: &str, iface: &str, path: &str) -> Result<()> 
     let port = cfg.listen_port();
     let transparent = !cfg.devices.is_empty();
     let service = Service {
+        dns: transparent
+            .then(dns::Resolver::new)
+            .transpose()?
+            .map(Arc::new),
         engine: Arc::new(Engine::new(cfg)?),
         lan,
         iface: iface.into(),
@@ -115,10 +130,12 @@ async fn accept(listener: TcpListener, s: Service, transparent: bool) -> Result<
             let _permit = permit;
             if transparent {
                 let dest = c.local_addr()?;
-                ensure!(
-                    dest != SocketAddr::from((s.lan, TRANSPARENT_PORT)),
-                    "direct connection to transparent listener"
-                );
+                if dest == SocketAddr::from((s.lan, TRANSPARENT_PORT)) {
+                    if let Some(resolver) = s.device_dns(from) {
+                        resolver.tcp(&s.engine, from, &mut c).await?;
+                    }
+                    return Ok(());
+                }
                 let domain_routing = s.engine.cfg.rules.iter().any(|r| r.needs_tcp_domain());
                 let (data, domain) = if domain_routing {
                     sniff::read(&mut c, dest.port()).await?

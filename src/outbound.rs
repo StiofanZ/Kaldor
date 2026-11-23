@@ -198,7 +198,12 @@ impl Engine {
             result,
         )
     }
-    async fn dial_tcp(&self, src: IpAddr, t: &Target, outbound: &str) -> Result<Connection> {
+    pub(crate) async fn dial_tcp(
+        &self,
+        src: IpAddr,
+        t: &Target,
+        outbound: &str,
+    ) -> Result<Connection> {
         let (adapter, m) = self.select(src, t, outbound, Network::Tcp)?;
         timeout(Duration::from_secs(12), async {
             match adapter {
@@ -269,26 +274,30 @@ impl Engine {
         .await?
     }
 }
+pub(crate) fn verified_tls() -> Result<SslConnector> {
+    let mut tls = SslConnector::builder(SslMethod::tls())?;
+    tls.set_min_proto_version(Some(SslVersion::TLS1_2))?;
+    if let Some(path) = std::env::var_os("SSL_CERT_FILE") {
+        tls.set_ca_file(path)?;
+    } else if let Some(path) = [
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/ssl/cert.pem",
+        "/rom/etc/ssl/certs/ca-certificates.crt",
+        "/usr/sbin/ca-bundle.crt",
+    ]
+    .iter()
+    .find(|p| std::path::Path::new(p).is_file())
+    {
+        tls.set_ca_file(path)?;
+    }
+    Ok(tls.build())
+}
+
 fn adapter(u: &Upstream) -> Result<Adapter> {
     let (host, port) = u.endpoint()?;
     let dialer = Arc::new(DirectDialer);
     match u.protocol.as_str() {
         "anytls" => {
-            let mut tls = SslConnector::builder(SslMethod::tls())?;
-            tls.set_min_proto_version(Some(SslVersion::TLS1_2))?;
-            if let Some(path) = std::env::var_os("SSL_CERT_FILE") {
-                tls.set_ca_file(path)?;
-            } else if let Some(path) = [
-                "/etc/ssl/certs/ca-certificates.crt",
-                "/etc/ssl/cert.pem",
-                "/rom/etc/ssl/certs/ca-certificates.crt",
-                "/usr/sbin/ca-bundle.crt",
-            ]
-            .iter()
-            .find(|p| std::path::Path::new(p).is_file())
-            {
-                tls.set_ca_file(path)?;
-            }
             let name = if u.server_name.is_empty() {
                 host
             } else {
@@ -298,7 +307,7 @@ fn adapter(u: &Upstream) -> Result<Adapter> {
                 &u.secret,
                 u.server.clone(),
                 Arc::new(AnyTlsConnector {
-                    tls: tls.build(),
+                    tls: verified_tls()?,
                     name,
                 }),
                 PaddingFactory::default(),

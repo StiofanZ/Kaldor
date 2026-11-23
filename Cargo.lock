@@ -1009,6 +1009,7 @@ dependencies = [
  "base64",
  "boring",
  "bytes",
+ "hickory-proto",
  "http-body-util",
  "hyper",
  "hyper-util",
