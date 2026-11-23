@@ -241,6 +241,36 @@ def probe(root, engine, ctl, sing, xray, upgrade, stack):
     assert udp_split() == "udp/198.51.100.1"
     control("configure", conf("restore.json", cfg))
     print("same-port TCP/UDP, per-device selection, invalid edit preserves routing PASS", flush=True)
+    # A transparent flow without domain rules must acquire its displayed name
+    # while forwarding, with the same destination and egress in both views.
+    control("configure",conf("observe-transparent.json",{"enabled":True,"default":"direct","devices":["192.0.2.2/32"]}))
+    with subprocess.Popen([*client,sys.executable,"-c",
+        "import socket,sys;s=socket.create_connection(('198.51.100.2',80),4);"
+        "s.sendall(b'GET / HTTP/1.1\\r\\nHo');s.sendall(b'st: observe.example\\r\\n\\r\\n');"
+        "print(s.recv(512).split()[1].decode(),flush=True);sys.stdin.read(1)"],
+        stdin=subprocess.PIPE,stdout=subprocess.PIPE) as request:
+        try:
+            assert request.stdout.readline().strip()==b'200'
+            rows=activity()["recent"]
+            assert any(r["target"]=="observe.example" and r["ingress"]=="透明代理" and r["outbound"]=="direct" for r in rows)
+        finally:
+            request.communicate(input=b'x',timeout=5)
+    spawn(*wan,"openssl","s_server","-accept","198.51.100.2:8443","-cert",root/"ca.pem","-key",root/"key","-www","-quiet")
+    wait(lambda: ":8443" in command(*wan,"ss","-ltn"))
+    with subprocess.Popen([*client,sys.executable,"-c",
+        "import socket,ssl,sys;c=ssl.create_default_context(cafile=sys.argv[1]);"
+        "s=c.wrap_socket(socket.create_connection(('198.51.100.2',8443),4),server_hostname='peer.test');"
+        "print('ready',flush=True);sys.stdin.read(1)",str(root/"ca.pem")],
+        stdin=subprocess.PIPE,stdout=subprocess.PIPE) as tls:
+        try:
+            assert tls.stdout.readline().strip()==b'ready'
+            snapshot=activity()
+            rows=[row for source,row in snapshot["active"] if source.startswith("192.0.2.2:") and row["target"]=="peer.test"]
+            assert len(rows)==1 and rows[0] in snapshot["recent"]
+            assert (rows[0]["port"],rows[0]["transport"],rows[0]["outbound"])==(8443,"TCP","direct")
+        finally:
+            tls.communicate(input=b'x',timeout=5)
+    print("transparent Host and TLS SNI without rules, active and recent records agree PASS",flush=True)
     control("configure",conf("observe.json",{"enabled":True,"default":"direct"}))
     assert activity()["recent"] == [], "restart retained access history"
     with subprocess.Popen([*client, sys.executable, "-c",

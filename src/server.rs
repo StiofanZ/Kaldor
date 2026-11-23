@@ -118,15 +118,25 @@ async fn accept(listener: TcpListener, s: Service, transparent: bool) -> Result<
                     dest != SocketAddr::from((s.lan, TRANSPARENT_PORT)),
                     "direct connection to transparent listener"
                 );
-                let (data, domain) = if s.engine.cfg.rules.iter().any(|r| r.needs_tcp_domain()) {
+                let domain_routing = s.engine.cfg.rules.iter().any(|r| r.needs_tcp_domain());
+                let (data, domain) = if domain_routing {
                     sniff::read(&mut c, dest.port()).await?
                 } else {
                     (vec![], String::new())
                 };
                 let target = Target::from_socket(dest);
-                let (mut up, _session) = s.engine.tcp(from, &target, &domain, "透明代理").await?;
-                up.write_all(&data).await?;
-                tokio::io::copy_bidirectional(&mut c, &mut up).await?;
+                let (mut up, session) = s.engine.tcp(from, &target, &domain, "透明代理").await?;
+                if !domain_routing && sniff::supported(dest.port()) {
+                    let (reader, writer) = c.split();
+                    let mut observed = tokio::io::join(
+                        sniff::ObservedReader::new(reader, dest.port(), &session),
+                        writer,
+                    );
+                    tokio::io::copy_bidirectional(&mut observed, &mut up).await?;
+                } else {
+                    up.write_all(&data).await?;
+                    tokio::io::copy_bidirectional(&mut c, &mut up).await?;
+                }
                 Ok(())
             } else {
                 // Peek preserves the SOCKS greeting or HTTP method for its protocol handler.

@@ -38,64 +38,136 @@ fn sni(mut hello: &[u8]) -> Option<String> {
     }
     None
 }
-pub(super) async fn read(c: &mut TcpStream, port: u16) -> Result<(Vec<u8>, String)> {
-    let mut captured = Vec::new();
-    if !matches!(port, 80 | 8080 | 443 | 8443) {
-        return Ok((captured, String::new()));
-    }
-    let mut chunk = [0; 2048];
-    let sniff = async {
-        let mut records = 0;
-        let mut handshake = Vec::new();
-        while captured.len() < 32768 {
-            let cap = chunk.len().min(32768 - captured.len());
-            let n = c.read(&mut chunk[..cap]).await.ok()?;
-            if n == 0 {
-                break;
+const LIMIT: usize = 32768;
+
+pub(super) fn supported(port: u16) -> bool {
+    matches!(port, 80 | 8080 | 443 | 8443)
+}
+
+// A partial header returns None. A complete or unrecognizable header returns
+// Some, including when it carries no usable name.
+#[derive(Default)]
+struct Probe {
+    scanned: usize,
+    handshake: Vec<u8>,
+}
+impl Probe {
+    fn inspect(&mut self, wire: &[u8], port: u16) -> Option<Option<String>> {
+        if matches!(port, 80 | 8080) {
+            let end = wire[self.scanned..]
+                .windows(4)
+                .position(|p| p == b"\r\n\r\n");
+            if let Some(end) = end {
+                let name = std::str::from_utf8(&wire[..self.scanned + end])
+                    .ok()
+                    .and_then(|head| {
+                        head.lines()
+                            .skip(1)
+                            .filter_map(|l| l.split_once(':'))
+                            .find(|(k, _)| k.eq_ignore_ascii_case("host"))
+                            .and_then(|(_, v)| v.trim().parse::<hyper::http::uri::Authority>().ok())
+                            .map(|a| a.host().to_owned())
+                    });
+                return Some(name);
             }
-            captured.extend_from_slice(&chunk[..n]);
-            if matches!(port, 80 | 8080) {
-                if let Some(end) = captured.windows(4).position(|p| p == b"\r\n\r\n") {
-                    return std::str::from_utf8(&captured[..end])
-                        .ok()?
-                        .lines()
-                        .skip(1)
-                        .filter_map(|l| l.split_once(':'))
-                        .find(|(k, _)| k.eq_ignore_ascii_case("host"))
-                        .and_then(|(_, v)| v.trim().parse::<hyper::http::uri::Authority>().ok())
-                        .map(|a| a.host().to_owned());
+            self.scanned = wire.len().saturating_sub(3);
+        } else {
+            while let Some(head) = wire.get(self.scanned..self.scanned + 5) {
+                if head[0] != 22 {
+                    return Some(None);
                 }
-            } else {
-                while let Some(head) = captured.get(records..records + 5) {
-                    if head[0] != 22 {
-                        return None;
+                let end = self.scanned + 5 + usize::from(u16::from_be_bytes([head[3], head[4]]));
+                let body = wire.get(self.scanned + 5..end)?;
+                self.handshake.extend_from_slice(body);
+                self.scanned = end;
+                if self.handshake.len() >= 4 {
+                    let mut data = &self.handshake[..];
+                    if number(&mut data, 1)? != 1 {
+                        return Some(None);
                     }
-                    let end = records + 5 + usize::from(u16::from_be_bytes([head[3], head[4]]));
-                    let Some(body) = captured.get(records + 5..end) else {
-                        break;
-                    };
-                    handshake.extend_from_slice(body);
-                    records = end;
-                    if handshake.len() >= 4 {
-                        let mut data = &handshake[..];
-                        if number(&mut data, 1)? != 1 {
-                            return None;
-                        }
-                        if let Some(hello) = field(&mut data, 3) {
-                            return sni(hello);
-                        }
+                    if let Some(hello) = field(&mut data, 3) {
+                        return Some(sni(hello));
                     }
                 }
             }
         }
         None
+    }
+}
+
+pub(super) async fn read(c: &mut TcpStream, port: u16) -> Result<(Vec<u8>, String)> {
+    let mut captured = Vec::new();
+    if !supported(port) {
+        return Ok((captured, String::new()));
+    }
+    let mut probe = Probe::default();
+    let sniff = async {
+        let mut chunk = [0; 2048];
+        while captured.len() < LIMIT {
+            let cap = chunk.len().min(LIMIT - captured.len());
+            let n = c.read(&mut chunk[..cap]).await?;
+            if n == 0 {
+                break;
+            }
+            captured.extend_from_slice(&chunk[..n]);
+            if let Some(name) = probe.inspect(&captured, port) {
+                return Ok::<_, std::io::Error>(name);
+            }
+        }
+        Ok(None)
     };
-    let domain = timeout(Duration::from_secs(1), sniff)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+    let domain = match timeout(Duration::from_secs(1), sniff).await {
+        Ok(result) => result?.unwrap_or_default(),
+        Err(_) => String::new(),
+    };
     Ok((captured, domain))
+}
+
+// Observe only bytes delivered by the ordinary relay. No reads, timers or
+// DNS lookups are added to the connection's establishment or the return path.
+pub(super) struct ObservedReader<'a> {
+    client: tokio::net::tcp::ReadHalf<'a>,
+    pending: Option<(Probe, Vec<u8>)>,
+    port: u16,
+    session: &'a crate::activity::Session,
+}
+impl<'a> ObservedReader<'a> {
+    pub fn new(
+        client: tokio::net::tcp::ReadHalf<'a>,
+        port: u16,
+        session: &'a crate::activity::Session,
+    ) -> Self {
+        Self {
+            client,
+            pending: Some(Default::default()),
+            port,
+            session,
+        }
+    }
+}
+impl AsyncRead for ObservedReader<'_> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        std::task::ready!(std::pin::Pin::new(&mut self.client).poll_read(cx, buf))?;
+        let port = self.port;
+        if let Some((probe, wire)) = &mut self.pending {
+            let chunk = &buf.filled()[before..];
+            wire.extend_from_slice(&chunk[..chunk.len().min(LIMIT - wire.len())]);
+            if let Some(name) = probe.inspect(wire, port) {
+                if let Some(name) = name {
+                    self.session.set_domain(&name);
+                }
+                self.pending = None;
+            } else if wire.len() == LIMIT || chunk.is_empty() {
+                self.pending = None;
+            }
+        }
+        std::task::Poll::Ready(Ok(()))
+    }
 }
 
 #[cfg(test)]

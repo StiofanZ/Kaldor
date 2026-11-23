@@ -23,6 +23,8 @@ const SOCKET: &str = "activity.sock";
 
 #[derive(Clone, Serialize)]
 struct Entry {
+    #[serde(skip)]
+    id: u64,
     time: u64,
     device: String,
     target: String,
@@ -48,12 +50,35 @@ pub struct Session {
     activity: Activity,
     id: u64,
 }
+impl Session {
+    pub fn set_domain(&self, name: &str) {
+        let name = name.trim_end_matches('.');
+        if !valid_host(name) || name.parse::<IpAddr>().is_ok() {
+            return;
+        }
+        let mut state = self.activity.state.lock().unwrap();
+        if let Some((_, entry)) = state.active.get_mut(&self.id) {
+            entry.target = name.into();
+        }
+        if let Some(entry) = state.recent.iter_mut().find(|e| e.id == self.id) {
+            entry.target = name.into();
+        }
+    }
+}
 impl Drop for Session {
     fn drop(&mut self) {
         let mut state = self.activity.state.lock().unwrap();
         state.active.remove(&self.id);
         state.total -= 1;
     }
+}
+
+fn valid_host(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 253
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
 }
 
 fn display_target(host: &str) -> String {
@@ -67,15 +92,7 @@ fn display_target(host: &str) -> String {
             "局域网".into()
         }
         Ok(ip) => ip.to_string(),
-        Err(_)
-            if host.len() <= 253
-                && !host.is_empty()
-                && host
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b)) =>
-        {
-            host.into()
-        }
+        Err(_) if valid_host(host) => host.into(),
         _ => "未知目标".into(),
     }
 }
@@ -94,7 +111,8 @@ impl Activity {
         access: Access<'_>,
         result: anyhow::Result<T>,
     ) -> anyhow::Result<(T, Session)> {
-        let entry = Entry {
+        let mut entry = Entry {
+            id: 0,
             time: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -124,10 +142,11 @@ impl Activity {
         if state.recent.len() == LIMIT {
             state.recent.pop_back();
         }
-        state.recent.push_front(entry.clone());
-        let value = result?;
         state.serial += 1;
         let id = state.serial;
+        entry.id = id;
+        state.recent.push_front(entry.clone());
+        let value = result?;
         state.total += 1;
         if state.active.len() < LIMIT {
             state.active.insert(id, (access.source, entry));
