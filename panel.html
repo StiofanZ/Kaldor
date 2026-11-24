@@ -87,7 +87,7 @@ output{overflow-wrap:anywhere}
 <div class="section-head"><button type="button" id="newPolicy">添加策略</button></div>
 <div id="policies"></div><p class="hint" id="noPolicies">尚未添加策略。可在全局代理或分流规则中选择策略。</p></section>
 <section class="card" id="rulePanel" data-config inert role="tabpanel" aria-labelledby="tab-rules" hidden><div class="section-head"><button type="button" id="newRule">添加条件规则</button><button type="button" id="newStandard">添加标准规则</button><button type="button" id="newRemote">引用远程规则集</button></div>
-<p class="hint">按从上到下的顺序匹配，首条满足全部条件的规则生效。未命中时使用下方的兜底出口。</p><label>规则兜底出口<select id="fallback"></select></label><details><summary>导入本地规则文件</summary><div class="fields"><label>文件未指定出口时使用<select id="importTarget"></select></label><label>选择 UTF-8 文件<input id="importFile" type="file" accept=".list,.txt,.yml,.yaml,text/plain"></label></div><small>每行一条规则，也支持 rules 或 payload 的 YAML 列表。规则将依次追加到末尾。</small></details><div id="rules"></div></section>
+<p class="hint">按从上到下的顺序匹配，首条满足全部条件的规则生效。未命中时使用下方的兜底出口。</p><label>规则兜底出口<select id="fallback"></select></label><div id="rules"></div></section>
 <section class="card" id="dnsPanel" data-config inert role="tabpanel" aria-labelledby="tab-dns" hidden>
 <div class="section-head"><button type="button" id="newDnsRule">添加 DNS 规则</button></div>
 <p class="hint">规则判定模式下，按查询域名从上到下选择加密 DNS 出口。域名后缀包括该域名及其子域名。</p>
@@ -251,9 +251,7 @@ byId('outboundMode').onchange=()=>{
 };
 function refresh(){
  for(const box of byId('policies').children)refreshMembers(box);
- populate(byId('importTarget'),byId('importTarget').value||'direct');
  for(const select of selectors())populate(select,select.value||(select===byId('dnsFallback')?'':'direct'));
- if(!byId('importTarget').value)byId('importTarget').value='direct';
  const global=byId('globalOutbound'), selected=global.value;
  global.replaceChildren(new Option('请选择节点或策略',''),...targets().slice(2).map(([id,label])=>new Option(label,id)));
  global.value=selected;
@@ -395,33 +393,6 @@ function readStandard(line,defaultTarget){
  targetId(target);
  return {standard:condition.join(','),outbound:target};
 }
-function stageRuleFile(text){
- const prepared=[],lines=text.replace(/^\uFEFF/,'').split(/\r?\n/);
- let header='';
- for(let i=0;i<lines.length;i++){
-  let value=lines[i].replace(/\s+#.*$/,'').trim();
-  if(!value||value.startsWith('#'))continue;
-  if(!header && !prepared.length && ['payload:','rules:'].includes(value)){header=value;continue;}
-  try{
-   if(header){if(!value.startsWith('- '))throw Error('应为 YAML 列表项');value=value.slice(2).trim();}
-   if(/^['"]/.test(value)){if(value.length<2||value.at(-1)!==value[0])throw Error('引号未闭合');value=value.slice(1,-1);}
-   prepared.push(readStandard(value,outbound(byId('importTarget'))));
-   if(prepared.length+byId('rules').childElementCount>512)throw Error('最多可编辑 512 条规则，可使用远程规则集');
-  }catch(e){throw Error('第 '+(i+1)+' 行：'+e.message);}
- }
- if(!prepared.length)throw Error('文件没有规则');
- prepared.forEach(rule);
- byId('result').textContent='已添加 '+prepared.length+' 条，保存并应用后生效。';
-}
-byId('importFile').onchange=async e=>{
- const file=e.target.files[0];if(!file)return;
- try{
-  if(file.size>65536)throw Error('本地文件超过 64 KiB，请使用远程规则集。');
-  stageRuleFile(new TextDecoder('utf-8',{fatal:true}).decode(await file.arrayBuffer()));
- }catch(err){byId('result').textContent=err.message;}
- finally{e.target.value='';}
-};
-
 function rule(data={}){
  const remote='rule_url' in data, standard='standard' in data;
  const box=entry(byId('rules'),remote?'远程规则集':standard?'标准规则':'匹配条件');

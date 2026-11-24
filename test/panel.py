@@ -114,18 +114,18 @@ addEventListener('load',async ()=>{
    assert(saved.policies[0].type===kind && !('selected' in saved.policies[0]),'policy type save');
   }
   tab('rules').click();
-  const count=byId('rules').childElementCount, importInput=byId('importFile');
-  const file=new File(["rules:\\n - 'DOMAIN,first.example,DIRECT'\\n - DST-PORT,443,REJECT"],'local.yaml');
-  const dt=new DataTransfer();dt.items.add(file);importInput.files=dt.files;
-  await importInput.onchange({target:importInput});
-  assert(byId('rules').childElementCount===count+2,'file did not stage two rules: '+byId('result').textContent);
-  try{stageRuleFile('DOMAIN,valid.example,DIRECT\\nGEOIP,CN,DIRECT');throw Error('invalid file accepted');}
-  catch(err){assert(err.message.includes('第 2 行') && byId('rules').childElementCount===count+2,'partial or invalid file import');}
+  assert(!byId('rulePanel').querySelector('input[type=file]'),'unexpected local file picker');
+  const count=saved.rules.length;
+  saved.rules.push({standard:'DOMAIN,first.example',outbound:'direct'});
+  config=saved;await load();
+  byId('newStandard').click();
+  const expression=byId('rules').lastElementChild.querySelector('[data-key=standard]');
+  expression.value='DST-PORT,443,REJECT';expression.dispatchEvent(new Event('change'));
   byId('newRemote').click();
   const remote=byId('rules').lastElementChild;
   remote.querySelector('[data-key=rule_url]').value='https://rules.example/remote.list';
   form.requestSubmit();await new Promise(r=>setTimeout(r,20));
-  assert(saved.rules[count].standard==='DOMAIN,first.example' && saved.rules[count+1].outbound==='reject' && saved.rules.at(-1).rule_url.endsWith('/remote.list'),'saved file rules');
+  assert(saved.rules[count].standard==='DOMAIN,first.example' && saved.rules[count].outbound==='direct' && saved.rules[count+1].standard==='DST-PORT,443' && saved.rules[count+1].outbound==='reject' && saved.rules.at(-1).rule_url.endsWith('/remote.list'),'existing, manual and remote rules round trip');
   saved.rules.at(-1).rule_digest='a'.repeat(64);config=saved;await load();
   assert(rows('rules').at(-1).rule_digest==='a'.repeat(64),'lost cached revision on reload');
   click(byId('rules').lastElementChild,'重新下载');assert(!rows('rules').at(-1).rule_digest,'refresh did not request download');
