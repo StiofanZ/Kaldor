@@ -86,7 +86,7 @@ output{overflow-wrap:anywhere}
 <section class="card" id="policyPanel" data-config inert role="tabpanel" aria-labelledby="tab-policies" hidden>
 <div class="section-head"><button type="button" id="newPolicy">添加策略</button></div>
 <div id="policies"></div><p class="hint" id="noPolicies">尚未添加策略。可在全局代理或分流规则中选择策略。</p></section>
-<section class="card" id="rulePanel" data-config inert role="tabpanel" aria-labelledby="tab-rules" hidden><div class="section-head"><button type="button" id="newRule">添加条件规则</button><button type="button" id="newStandard">添加标准规则</button><button type="button" id="newRemote">引用远程规则集</button></div>
+<section class="card" id="rulePanel" data-config inert role="tabpanel" aria-labelledby="tab-rules" hidden><div class="section-head"><button type="button" id="newRule">添加条件规则</button><button type="button" id="newStandard">添加标准规则</button><button type="button" id="newRemote">添加远程规则</button></div>
 <p class="hint">按从上到下的顺序匹配，首条满足全部条件的规则生效。未命中时使用下方的兜底出口。</p><label>规则兜底出口<select id="fallback"></select></label><div id="rules"></div></section>
 <section class="card" id="dnsPanel" data-config inert role="tabpanel" aria-labelledby="tab-dns" hidden>
 <div class="section-head"><button type="button" id="newDnsRule">添加 DNS 规则</button></div>

@@ -121,7 +121,7 @@ addEventListener('load',async ()=>{
   byId('newStandard').click();
   const expression=byId('rules').lastElementChild.querySelector('[data-key=standard]');
   expression.value='DST-PORT,443,REJECT';expression.dispatchEvent(new Event('change'));
-  byId('newRemote').click();
+  click(byId('rulePanel'),'添加远程规则');
   const remote=byId('rules').lastElementChild;
   remote.querySelector('[data-key=rule_url]').value='https://rules.example/remote.list';
   form.requestSubmit();await new Promise(r=>setTimeout(r,20));
