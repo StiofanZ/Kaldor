@@ -15,7 +15,7 @@ header{padding:3px 0 14px;border-bottom:2px solid var(--accent)}
 #status[data-state=running]{color:#a5eaca;border-color:#4e826d}
 #status[data-state=degraded]{color:#ffcf87;border-color:#956e40}
 [hidden]{display:none!important}
-.tabs{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;margin:14px 0}
+.tabs{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin:14px 0}
 .tabs button{min-width:0;padding:8px 3px;border-color:transparent;background:transparent;color:var(--muted)}
 .tabs button[aria-selected=true]{background:var(--panel);border-color:var(--edge);box-shadow:inset 0 -2px var(--accent);color:var(--text)}
 #release{margin-top:16px;padding-top:12px;border-top:1px solid var(--edge)}
@@ -61,6 +61,7 @@ output{overflow-wrap:anywhere}
 <button type="button" role="tab" id="tab-nodes" aria-controls="nodePanel" aria-selected="false" tabindex="-1">代理节点</button>
 <button type="button" role="tab" id="tab-policies" aria-controls="policyPanel" aria-selected="false" tabindex="-1">代理策略</button>
 <button type="button" role="tab" id="tab-rules" aria-controls="rulePanel" aria-selected="false" tabindex="-1">分流规则</button>
+<button type="button" role="tab" id="tab-dns" aria-controls="dnsPanel" aria-selected="false" tabindex="-1">DNS 规则</button>
 <button type="button" role="tab" id="tab-connections" aria-controls="connections" aria-selected="false" tabindex="-1">活动连接</button>
 <button type="button" role="tab" id="tab-access" aria-controls="access" aria-selected="false" tabindex="-1">访问日志</button>
 </div>
@@ -87,6 +88,10 @@ output{overflow-wrap:anywhere}
 <div id="policies"></div><p class="hint" id="noPolicies">尚未添加策略。可在全局代理或分流规则中选择策略。</p></section>
 <section class="card" id="rulePanel" data-config inert role="tabpanel" aria-labelledby="tab-rules" hidden><div class="section-head"><button type="button" id="newRule">添加条件规则</button><button type="button" id="newStandard">添加标准规则</button><button type="button" id="newRemote">引用远程规则集</button></div>
 <p class="hint">按从上到下的顺序匹配，首条满足全部条件的规则生效。未命中时使用下方的兜底出口。</p><label>规则兜底出口<select id="fallback"></select></label><details><summary>导入本地规则文件</summary><div class="fields"><label>文件未指定出口时使用<select id="importTarget"></select></label><label>选择 UTF-8 文件<input id="importFile" type="file" accept=".list,.txt,.yml,.yaml,text/plain"></label></div><small>每行一条规则，也支持 rules 或 payload 的 YAML 列表。规则将依次追加到末尾。</small></details><div id="rules"></div></section>
+<section class="card" id="dnsPanel" data-config inert role="tabpanel" aria-labelledby="tab-dns" hidden>
+<div class="section-head"><button type="button" id="newDnsRule">添加 DNS 规则</button></div>
+<p class="hint">规则判定模式下，按查询域名从上到下选择加密 DNS 出口。域名后缀包括该域名及其子域名。</p>
+<label>DNS 未命中时<select id="dnsFallback"></select></label><div id="dnsRules"></div></section>
 <div class="actions" data-config inert><button type="submit">保存并应用</button><output role="status" id="result"></output></div></form>
 <section class="card" id="connections" role="tabpanel" aria-labelledby="tab-connections" hidden>
 <div class="activity-head"><output role="status"></output><button type="button">刷新连接</button></div>
@@ -221,9 +226,13 @@ function targets(){
  }
  return entries;
 }
-function selectors(){return [byId('fallback'),...byId('rules').querySelectorAll('[data-key=outbound]')];}
+function selectors(){return [byId('fallback'),byId('dnsFallback'),...document.querySelectorAll('#rules [data-key=outbound],#dnsRules [data-key=outbound]')];}
 function populate(select,selected){
  select.replaceChildren(...targets().map(([id,label])=>new Option(label,id)));
+ if(select.closest('#dnsPanel')){
+  select.prepend(new Option('按查询域名匹配分流规则','@rules'));
+  if(select===byId('dnsFallback'))select.prepend(new Option('沿用解析器连接的出站规则',''));
+ }
  select.value=selected;
 }
 function updateMode(){
@@ -243,19 +252,20 @@ byId('outboundMode').onchange=()=>{
 function refresh(){
  for(const box of byId('policies').children)refreshMembers(box);
  populate(byId('importTarget'),byId('importTarget').value||'direct');
- for(const select of selectors())populate(select,select.value||'direct');
+ for(const select of selectors())populate(select,select.value||(select===byId('dnsFallback')?'':'direct'));
  if(!byId('importTarget').value)byId('importTarget').value='direct';
  const global=byId('globalOutbound'), selected=global.value;
  global.replaceChildren(new Option('请选择节点或策略',''),...targets().slice(2).map(([id,label])=>new Option(label,id)));
  global.value=selected;
 }
 function targetId(name){
+ if(name==='@rules')return name;
  const item=targets().find(([,label])=>label===name);
  if(!item)throw Error('配置引用了不存在的出口：'+name);
  return item[0];
 }
 function outbound(select){
- if(['direct','reject'].includes(select.value))return select.value;
+ if(['direct','reject','@rules'].includes(select.value))return select.value;
  const box=byId(select.value);
  if(!box)throw Error('请选择有效出口。');
  return box.querySelector('[data-key=name]').value.trim();
@@ -431,6 +441,18 @@ function rule(data={}){
  const port=field(box,'port','目的端口',data.port,'number');port.min=1;port.max=65535;
  }
  const select=field(box,'outbound','出口','',[]);populate(select,targetId(data.outbound||'direct'));
+ addMoveButtons(box);
+}
+function dnsRule(data={}){
+ const box=entry(byId('dnsRules'),'DNS 查询');
+ const kind=field(box,'type','匹配方式','',[]);
+ kind.replaceChildren(new Option('域名后缀','suffix'),new Option('完整域名','exact'),new Option('域名关键词','keyword'));
+ kind.value=data.type||'suffix';
+ const value=field(box,'value','查询域名或关键词',data.value);value.required=true;value.maxLength=254;value.placeholder='example.org';
+ const select=field(box,'outbound','DNS 出口','',[]);populate(select,targetId(data.outbound||'direct'));
+ addMoveButtons(box);
+}
+function addMoveButtons(box){
  const tools=box.querySelector('.row-tools');
  tools.prepend(button('上移',()=>{if(box.previousElementSibling)box.previousElementSibling.before(box);}),
                button('下移',()=>{if(box.nextElementSibling)box.nextElementSibling.after(box);}));
@@ -457,12 +479,13 @@ async function load(){
  if(!r.ok||!s.ok)throw Error('无法读取配置，请重新登录管理页。');
  const c=await r.json();const status=(await s.text()).trim();byId('status').dataset.state=status;byId('status').textContent=({running:'运行中',degraded:'透明路由异常',stopped:'已停止',uninstalled:'未安装'}[status]||'状态未知');
  byId('listenPort').value=c.listen_port??6000;byId('enabled').checked=c.enabled;
- byId('rules').textContent='';byId('policies').textContent='';byId('nodes').textContent='';(c.upstreams||[]).forEach(node);(c.policies||[]).forEach(policy);(c.rules||[]).forEach(rule);refresh();byId('fallback').value=targetId(c.default||'direct');
+ byId('rules').textContent='';byId('dnsRules').textContent='';byId('policies').textContent='';byId('nodes').textContent='';(c.upstreams||[]).forEach(node);(c.policies||[]).forEach(policy);(c.rules||[]).forEach(rule);(c.dns?.rules||[]).forEach(dnsRule);refresh();byId('dnsFallback').value=c.dns?.default?targetId(c.dns.default):'';byId('fallback').value=targetId(c.default||'direct');
  byId('outboundMode').value=c.outbound_mode||'rules';
  byId('globalOutbound').value=c.global_outbound?targetId(c.global_outbound):'';
  updateMode();lockConfig(false);
 }
 byId('newPolicy').onclick=()=>policy();byId('newNode').onclick=()=>node();byId('newRule').onclick=()=>rule();
+byId('newDnsRule').onclick=()=>dnsRule();
 byId('newStandard').onclick=()=>rule({standard:''});byId('newRemote').onclick=()=>rule({rule_url:''});
 byId('settings').onsubmit=async e=>{
  e.preventDefault();
@@ -475,6 +498,16 @@ byId('settings').onsubmit=async e=>{
  }
  const submit=e.submitter||document.querySelector('button[type=submit]');submit.disabled=true;const out=byId('result');out.textContent='正在应用…';
  try{const config={enabled:byId('enabled').checked,upstreams:rows('nodes'),rules:rows('rules'),default:outbound(byId('fallback'))};
+ const dnsRules=rows('dnsRules'),dnsFallback=byId('dnsFallback');
+ if(dnsRules.length || dnsFallback.value){
+  config.dns={rules:dnsRules};
+  if(dnsFallback.value)config.dns.default=outbound(dnsFallback);
+  for(const [index,r] of dnsRules.entries()){
+   const kind={exact:'DOMAIN',suffix:'DOMAIN-SUFFIX',keyword:'DOMAIN-KEYWORD'}[r.type];
+   try{if(r.value.includes(','))throw Error('域名不能含逗号');readStandard(kind+','+r.value,'direct');}
+   catch(err){selectTab(byId('tab-dns'));throw Error('DNS 规则 '+(index+1)+'：'+err.message);}
+  }
+ }
  config.outbound_mode=byId('outboundMode').value;
  const global=byId('globalOutbound');
  if(global.value)config.global_outbound=outbound(global);
@@ -486,7 +519,7 @@ byId('settings').onsubmit=async e=>{
  const used=new Set(['direct','reject']);for(const n of config.upstreams){if(used.has(n.name)){selectTab(byId('tab-nodes'));throw Error('节点名称重复或为保留名称：'+n.name);}used.add(n.name);}
  for(const p of policies){if(used.has(p.name)){selectTab(byId('tab-policies'));throw Error('策略与节点名称必须唯一：'+p.name);}used.add(p.name);}
  const body=JSON.stringify(config);
- if(config.rules.length>512 || new Blob([body]).size>65536)throw Error('配置超过 512 条或 64 KiB，请使用远程规则集。');
+ if(config.rules.length>512 || dnsRules.length>512 || new Blob([body]).size>65536)throw Error('配置超过 512 条或 64 KiB，请使用远程规则集。');
  lockConfig(true);
  const r=await fetch('/axproxy-save.cgi',{method:'POST',headers:{'Content-Type':'application/json'},body});
  if(!r.ok||!(await r.json()).ok)throw Error(config.rules.some(r=>r.rule_url)?'应用失败。请检查远程文件能否通过 HTTPS 获取、是否为支持的规则格式，以及出口配置。':'应用失败，请检查监听端口是否被占用，以及节点和分流配置。');try{await load();}catch{out.textContent='已保存，状态读取失败，请刷新页面。';return;}out.textContent='已应用';}

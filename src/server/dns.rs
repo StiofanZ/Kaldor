@@ -129,14 +129,28 @@ impl Resolver {
             host: RESOLVER_IP.to_string(),
             port: 443,
         };
-        let outbound = engine.cfg.route(
-            src.ip(),
-            service.reserved,
-            resolver.addr(),
-            443,
-            HOST,
-            Network::Tcp,
-        );
+        let selected = if engine.cfg.uses_dns_rules() {
+            // A literal dot within a wire label must never become a suffix boundary.
+            let name = query.queries[0].name().to_ascii().replace(r"\.", r"\056");
+            engine.cfg.query_outbound(
+                src.ip(),
+                service.reserved,
+                &name,
+                if udp { Network::Udp } else { Network::Tcp },
+            )
+        } else {
+            None
+        };
+        let outbound = selected.unwrap_or_else(|| {
+            engine.cfg.route(
+                src.ip(),
+                service.reserved,
+                resolver.addr(),
+                443,
+                HOST,
+                Network::Tcp,
+            )
+        });
         let wire = Bytes::from(wire);
         let (outbound, result) = engine
             .via(outbound, |node| {

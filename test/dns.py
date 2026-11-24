@@ -15,11 +15,14 @@ AUTHORITY = "cloudflare-dns.com"
 WAN = "198.51.100.2"
 ENCRYPTED = "203.0.113.22"
 PLAIN = "203.0.113.11"
+DIRECT_DOH = "203.0.113.33"
 
 
 def response(query, addr):
     count = 40 if b"oversize" in query else 1
-    rr = bytes.fromhex("c00c00010001000000010004") + socket.inet_aton(addr)
+    qtype = int.from_bytes(query[-4:-2], "big")
+    data = socket.inet_pton(socket.AF_INET6, "2001:db8::"+addr.split(".")[-1]) if qtype==28 else socket.inet_aton(addr)
+    rr = struct.pack("!HHHIH", 0xc00c, qtype, 1, 1, len(data)) + data
     return query[:2] + struct.pack("!5H", 0x8180, 1, count, 0, 0) + query[12:] + rr * count
 
 
@@ -30,7 +33,7 @@ class Doh(http.server.BaseHTTPRequestHandler):
         assert self.headers["Host"] == AUTHORITY and self.path == "/dns-query"
         assert self.headers["Content-Type"] == "application/dns-message"
         query = self.rfile.read(int(self.headers["Content-Length"]))
-        body = response(query, ENCRYPTED)
+        body = response(query, DIRECT_DOH if self.client_address[0]=="198.51.100.1" else ENCRYPTED)
         self.send_response(200)
         self.send_header("Content-Type", "application/dns-message")
         self.send_header("Content-Length", str(len(body)))
@@ -74,9 +77,10 @@ def server(root):
     https.serve_forever()
 
 
-def query(src, dst, proto, label):
+def query(src, dst, proto, label, qtype="A"):
     tx = secrets.token_bytes(2)
-    data = tx + bytes.fromhex("01000001000000000000") + bytes([len(label)]) + label.encode() + b"\x04test\0\0\x01\0\x01"
+    qname=b"".join(bytes([len(part)])+part.encode() for part in (label+".test").split("."))+b"\0"
+    data=tx+bytes.fromhex("01000001000000000000")+qname+struct.pack("!HH",28 if qtype=="AAAA" else 1,1)
     with socket.socket(socket.AF_INET6 if ":" in src else socket.AF_INET,
                        socket.SOCK_DGRAM if proto == "udp" else socket.SOCK_STREAM) as sock:
         sock.settimeout(8)
@@ -98,7 +102,7 @@ def query(src, dst, proto, label):
         assert len(reply) <= 512
         print("truncated")
     else:
-        print(socket.inet_ntoa(reply[-4:]))
+        print(socket.inet_ntop(socket.AF_INET6,reply[-16:]) if qtype=="AAAA" else socket.inet_ntoa(reply[-4:]))
 
 
 def verify(root, command, spawn, wait, client, wan, sing, conf, control, activity, peer, sing_conf):
@@ -125,8 +129,8 @@ def verify(root, command, spawn, wait, client, wan, sing, conf, control, activit
                                   "upstreams": [dict(peer, name="node", server=WAN + ":19443")]})
     control("configure", cfg)
 
-    def lookup(src, dst, proto, label="example"):
-        return command(*client, sys.executable, script, "query", src, dst, proto, label)
+    def lookup(src, dst, proto, label="example", qtype="A"):
+        return command(*client, sys.executable, script, "query", src, dst, proto, label, qtype)
 
     for proto in ("udp", "tcp"):
         for dst in (WAN, "192.0.2.1"):
@@ -144,6 +148,32 @@ def verify(root, command, spawn, wait, client, wan, sing, conf, control, activit
     modes = json.loads(cfg.read_text())
     modes.pop("devices", None)
     modes.update(global_outbound="node", rules=[{"port":443,"outbound":"reject"}])
+    # The DoH test server returns a different answer for a direct TCP peer and a proxy peer.
+    command("ip","route","replace",PUBLIC+"/32","via",WAN,"dev","wan0")
+    settings=dict(modes, default="reject", rules=[{"standard":"DOMAIN,listed.test","outbound":"node"}],
+                  policies=[{"name":"selected","type":"manual","members":["node"],"selected":"node"}],
+                  dns={"default":"@rules","rules":[
+                      {"type":"exact","value":"safe.blocked.test","outbound":"direct"},
+                      {"type":"suffix","value":"BLOCKED.test.","outbound":"selected"},
+                      {"type":"keyword","value":"local","outbound":"direct"}]})
+    control("configure",conf("query-routing.json",settings))
+    for proto in ("udp","tcp"):
+        for kind in ("A","AAAA"):
+            for label,expected in [("blocked",ENCRYPTED),("www.blocked",ENCRYPTED),("safe.blocked",DIRECT_DOH),
+                                   ("localname",DIRECT_DOH),("listed",ENCRYPTED),("notblocked","rcode 2")]:
+                want="2001:db8::"+expected.split(".")[-1] if kind=="AAAA" and "." in expected else expected
+                assert lookup(selected,WAN,proto,label,kind)==want,(label,proto,kind)
+    records=[r for r in activity()["recent"] if r["ingress"]=="透明 DNS"]
+    assert {"node","direct","reject"} <= {r["outbound"] for r in records}
+    assert all(r["target"]==AUTHORITY for r in records)
+    # The direct DoH path still works when the selected proxy fails.
+    broken=dict(settings,upstreams=[dict(settings["upstreams"][0],server=WAN+":19446")])
+    control("configure",conf("query-failure.json",broken))
+    assert lookup(selected,WAN,"udp","blocked")=="rcode 2"
+    assert lookup(selected,WAN,"udp","safe.blocked")==DIRECT_DOH
+    command("ip","route","replace","unreachable",PUBLIC+"/32")
+    modes["dns"]={"default":"reject","rules":[]}
+    print("DNS query policy: on-wire direct/proxy answers, A/AAAA over UDP/TCP, domain precedence, ordinary rules and no direct retry PASS",flush=True)
     for mode, expected in [("global",ENCRYPTED),("direct",PLAIN),("rules","rcode 2")]:
         modes["outbound_mode"] = mode
         control("configure", conf("dns-mode.json", modes))

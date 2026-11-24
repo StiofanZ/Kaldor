@@ -1,5 +1,7 @@
+mod dns;
 mod rules;
 use anyhow::{Context, Result, ensure};
+use dns::DnsRouting;
 use ipnet::IpNet;
 use meow_common::Network;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -35,6 +37,8 @@ pub struct Config {
     pub default: String,
     #[serde(deserialize_with = "list")]
     pub rules: Vec<Rule>,
+    #[serde(skip_serializing_if = "DnsRouting::is_empty")]
+    dns: DnsRouting,
     #[serde(skip)]
     effective_rules: Option<Vec<Rule>>,
     #[serde(deserialize_with = "list")]
@@ -114,11 +118,7 @@ impl Rule {
             return domain.eq_ignore_ascii_case(self.domain.trim_end_matches('.'));
         }
         if !self.domain_keyword.is_empty() {
-            let keyword = self.domain_keyword.as_bytes();
-            return domain
-                .as_bytes()
-                .windows(keyword.len())
-                .any(|s| s.eq_ignore_ascii_case(keyword));
+            return contains_keyword(domain, &self.domain_keyword);
         }
         if self.domain_suffix.is_empty() {
             return true;
@@ -127,15 +127,38 @@ impl Rule {
             .domain_suffix
             .strip_suffix('.')
             .unwrap_or(&self.domain_suffix);
-        let Some(start) = domain.len().checked_sub(suffix.len()) else {
-            return false;
-        };
-        !suffix.is_empty()
-            && (start == 0 || domain.as_bytes()[start - 1] == b'.')
-            && domain
-                .get(start..)
-                .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
+        matches_suffix(domain, suffix)
     }
+}
+fn valid_domain(value: &str) -> bool {
+    let name = value.strip_suffix('.').unwrap_or(value);
+    name.len() <= 253
+        && name.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && l.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+}
+fn valid_keyword(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 253 && value.bytes().all(|b| b.is_ascii_graphic())
+}
+fn contains_keyword(domain: &str, value: &str) -> bool {
+    !value.is_empty()
+        && domain
+            .as_bytes()
+            .windows(value.len())
+            .any(|s| s.eq_ignore_ascii_case(value.as_bytes()))
+}
+fn matches_suffix(domain: &str, suffix: &str) -> bool {
+    let Some(start) = domain.len().checked_sub(suffix.len()) else {
+        return false;
+    };
+    !suffix.is_empty()
+        && (start == 0 || domain.as_bytes()[start - 1] == b'.')
+        && domain
+            .get(start..)
+            .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
 }
 #[derive(Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -221,6 +244,7 @@ impl Config {
             names.contains(self.default.as_str()),
             "unknown default outbound"
         );
+        self.dns.validate(&names)?;
         if let Some(name) = &self.global_outbound {
             ensure!(
                 names.contains(name.as_str()) && !matches!(name.as_str(), "direct" | "reject"),

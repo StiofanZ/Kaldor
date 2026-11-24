@@ -78,14 +78,7 @@ fn parse_condition(line: &str, outbound: &str) -> Result<Rule> {
     match kind.as_str() {
         "DOMAIN" | "DOMAIN-SUFFIX" => {
             let domain = value.strip_suffix('.').unwrap_or(value);
-            ensure!(
-                domain.len() <= 253
-                    && domain.split('.').all(|l| !l.is_empty()
-                        && l.len() <= 63
-                        && l.bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')),
-                "invalid DNS name"
-            );
+            ensure!(valid_domain(value), "invalid DNS name");
             if kind == "DOMAIN" {
                 rule.domain = domain.into()
             } else {
@@ -93,14 +86,7 @@ fn parse_condition(line: &str, outbound: &str) -> Result<Rule> {
             }
         }
         "DOMAIN-KEYWORD" => {
-            ensure!(
-                value.len() <= 253
-                    && value.is_ascii()
-                    && !value
-                        .bytes()
-                        .any(|v| v.is_ascii_whitespace() || v.is_ascii_control()),
-                "invalid domain keyword"
-            );
+            ensure!(valid_keyword(value), "invalid domain keyword");
             rule.domain_keyword = value.into();
         }
         "IP-CIDR" | "IP-CIDR6" => {

@@ -129,6 +129,16 @@ addEventListener('load',async ()=>{
   saved.rules.at(-1).rule_digest='a'.repeat(64);config=saved;await load();
   assert(rows('rules').at(-1).rule_digest==='a'.repeat(64),'lost cached revision on reload');
   click(byId('rules').lastElementChild,'重新下载');assert(!rows('rules').at(-1).rule_digest,'refresh did not request download');
+  tab('dns').click();assert(active('dns') && byId('dnsFallback').value==='', 'legacy DNS fallback');
+  byId('newDnsRule').click();
+  const dnsBox=byId('dnsRules').firstElementChild;
+  dnsBox.querySelector('[data-key=value]').value='example.org';
+  const dnsNode=byId('nodes').firstElementChild;
+  dnsBox.querySelector('[data-key=outbound]').value=dnsNode.id;
+  byId('dnsFallback').value='@rules';
+  byId('result').textContent='';form.requestSubmit();await new Promise(r=>setTimeout(r,20));
+  assert(saved.dns.default==='@rules' && saved.dns.rules[0].type==='suffix' && saved.dns.rules[0].outbound===dnsNode.querySelector('[data-key=name]').value,'DNS save');
+  config=saved;await load();assert(rows('dnsRules')[0].value==='example.org' && byId('dnsFallback').value==='@rules','DNS reload');
   for(const id of ['connections','access']){
    tab(id).click();await new Promise(resolve=>setTimeout(resolve,20));
    assert(active(id) && form.hidden && byId(id).innerText.includes('example.test:443'),'activity '+id);

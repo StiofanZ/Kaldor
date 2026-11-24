@@ -65,6 +65,13 @@ def verify(root, command, spawn, wait, client, wan, sing, conf, control, activit
             for dst in (LAN, SERVER):
                 assert command(*client, sys.executable, str(Path(__file__).with_name("dns.py")),
                                "query", src, dst, proto, "example") == "203.0.113.22"
+    cfg["dns"]={"default":"reject","rules":[{"type":"suffix","value":"proxied.test","outbound":"node"}]}
+    control("configure",conf("qname-v6.json",cfg))
+    for proto in ("udp","tcp"):
+        for label, expected in [("www.proxied","2001:db8::22"),("notproxied","rcode 2")]:
+            assert command(*client, sys.executable, str(Path(__file__).with_name("dns.py")),
+                           "query", TEMP, LAN, proto, label, "AAAA")==expected
+    cfg.pop("dns")
     # Real QUIC, including return datagrams and domain recognition, through the remote AnyTLS node.
     hy_server = {"type":"hysteria2","listen":SERVER,"listen_port":18444,
                  "users":[{"password":peer["secret"]}],"tls":{"enabled":True,"certificate_path":str(root/"ca.pem"),"key_path":str(root/"key")}}
