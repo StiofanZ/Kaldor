@@ -4,7 +4,7 @@ use ring::digest::{SHA256, digest};
 use std::{
     fs,
     path::Path,
-    process::{Command, Stdio},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -159,79 +159,152 @@ fn parse_file(bytes: &[u8], outbound: &str, budget: usize) -> Result<Vec<Rule>> 
     Ok(rules)
 }
 
-fn download(url: &str, seconds: u64) -> Result<Vec<u8>> {
-    let mut curl = Command::new("curl")
-        .args([
-            "-q",
-            "--fail",
-            "--silent",
-            "--location",
-            "--globoff",
-            "--proto",
-            "=https",
-            "--proto-redir",
-            "=https",
-            "--connect-timeout",
-            "8",
-            "--max-time",
-            &seconds.to_string(),
-            "--max-filesize",
-            &MAX_FILE.to_string(),
-            "--",
-            url,
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let mut data = Vec::new();
-    let read = curl
-        .stdout
-        .take()
-        .unwrap()
-        .take(MAX_FILE as u64 + 1)
-        .read_to_end(&mut data);
-    if read.is_err() || data.len() > MAX_FILE {
-        let _ = curl.kill();
+async fn download(
+    engine: &crate::outbound::Engine,
+    raw_url: &str,
+    outbound: &str,
+) -> Result<Vec<u8>> {
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Empty, Limited};
+    use hyper::{Request, client::conn::http1, header};
+    use hyper_util::rt::TokioIo;
+    use url::{Position, Url};
+
+    let tls = crate::outbound::verified_tls()?;
+    let mut url = Url::parse(raw_url)?;
+    for _ in 0..=10 {
+        ensure!(
+            url.scheme() == "https" && url.username().is_empty() && url.password().is_none(),
+            "rule downloads require HTTPS without embedded credentials"
+        );
+        let host = url
+            .host_str()
+            .context("missing rule file host")?
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        let target = crate::outbound::Target {
+            host: host.into(),
+            port: url.port_or_known_default().context("missing port")?,
+        };
+        let (_, stream) = engine
+            .via(outbound, |node| {
+                engine.dial_tcp(std::net::Ipv4Addr::UNSPECIFIED.into(), &target, node)
+            })
+            .await;
+        let stream = tokio_boring::connect(tls.configure()?, host, stream?)
+            .await
+            .map_err(|e| anyhow::anyhow!("rule download TLS: {e}"))?;
+        let (mut sender, connection) = http1::handshake(TokioIo::new(stream)).await?;
+        tokio::spawn(connection);
+        let request = Request::get(&url[Position::BeforePath..Position::AfterQuery])
+            .header(
+                header::HOST,
+                &url[Position::BeforeHost..Position::AfterPort],
+            )
+            .header(
+                header::USER_AGENT,
+                concat!("Kaldor/", env!("CARGO_PKG_VERSION")),
+            )
+            .body(Empty::<Bytes>::new())?;
+        let response = sender.send_request(request).await?;
+        if matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
+            url = url.join(
+                response
+                    .headers()
+                    .get(header::LOCATION)
+                    .context("redirect missing Location")?
+                    .to_str()?,
+            )?;
+            continue;
+        }
+        ensure!(
+            response.status().is_success(),
+            "rules HTTP status {}",
+            response.status()
+        );
+        let bytes = Limited::new(response.into_body(), MAX_FILE)
+            .collect()
+            .await
+            .map_err(|e| anyhow::anyhow!("rule body: {e}"))?
+            .to_bytes();
+        return Ok(bytes.to_vec());
     }
-    let status = curl.wait()?;
-    read?;
-    ensure!(
-        status.success() && data.len() <= MAX_FILE,
-        "rule file download failed or exceeded 1 MiB"
-    );
-    Ok(data)
+    bail!("too many rule redirects")
 }
 
 impl Config {
     // Fetch only new or explicitly refreshed URLs while the previous worker is still running.
     // The saved configuration pins an immutable content digest for offline restart and rollback.
-    pub fn prepare_rule_files(&mut self, old: &Config, dir: &Path) -> Result<()> {
+    pub async fn prepare_rule_files(&mut self, old: &Config, dir: &Path) -> Result<()> {
         let start = Instant::now();
         let cache = dir.join("rule-files");
         let mut updates = std::collections::HashMap::new();
         for rule in &mut self.rules {
-            if rule.rule_url.is_empty() {
-                continue;
-            }
             if !rule.rule_digest.is_empty() {
-                ensure!(
-                    old.rules
-                        .iter()
-                        .any(|r| r.rule_url == rule.rule_url && r.rule_digest == rule.rule_digest),
-                    "unknown rule file revision"
-                );
+                let mut originals = old
+                    .rules
+                    .iter()
+                    .filter(|r| r.rule_url == rule.rule_url && r.rule_digest == rule.rule_digest)
+                    .peekable();
+                ensure!(originals.peek().is_some(), "unknown rule file revision");
+                if !originals.any(|r| {
+                    r.download_outbound.as_deref().unwrap_or("direct")
+                        == rule.download_outbound.as_deref().unwrap_or("direct")
+                }) {
+                    rule.rule_digest.clear();
+                }
+            }
+        }
+        let pending = self
+            .rules
+            .iter()
+            .filter(|r| !r.rule_url.is_empty() && r.rule_digest.is_empty());
+        let outlets: HashSet<_> = pending
+            .map(|r| r.download_outbound.as_deref().unwrap_or("direct"))
+            .collect();
+        if outlets.is_empty() {
+            return self.expand_rules(dir);
+        }
+        let policies: Vec<_> = self
+            .policies
+            .iter()
+            .filter(|p| outlets.contains(p.name.as_str()))
+            .cloned()
+            .collect();
+        let upstreams = self
+            .upstreams
+            .iter()
+            .filter(|n| {
+                outlets.contains(n.name.as_str())
+                    || policies.iter().any(|p| p.members.contains(&n.name))
+            })
+            .cloned()
+            .collect();
+        let engine = Arc::new(crate::outbound::Engine::new(Config {
+            default: "direct".into(),
+            policies,
+            upstreams,
+            ..Default::default()
+        })?);
+        let mut probes = tokio::task::JoinSet::new();
+        engine.start_probes(&mut probes)?;
+        for rule in &mut self.rules {
+            if rule.rule_url.is_empty() || !rule.rule_digest.is_empty() {
                 continue;
             }
-            if let Some(key) = updates.get(&rule.rule_url) {
+            let outbound = rule.download_outbound.as_deref().unwrap_or("direct");
+            let source = (rule.rule_url.clone(), outbound.to_owned());
+            if let Some(key) = updates.get(&source) {
                 rule.rule_digest = String::clone(key);
                 continue;
             }
-            let seconds = Duration::from_secs(30)
-                .saturating_sub(start.elapsed())
-                .as_secs()
-                .min(15);
-            ensure!(seconds > 0, "rule download timeout");
-            let content = download(&rule.rule_url, seconds)?;
+            let remaining = Duration::from_secs(90).saturating_sub(start.elapsed());
+            let content = tokio::time::timeout(
+                remaining.min(Duration::from_secs(60)),
+                download(&engine, &rule.rule_url, outbound),
+            )
+            .await
+            .context("rule download timeout")??;
             parse_file(&content, &rule.outbound, MAX_ENTRIES)?;
             let key = fingerprint(&content);
             fs::create_dir_all(&cache)?;
@@ -239,7 +312,7 @@ impl Config {
             let temp = cache.join("pending");
             fs::write(&temp, content)?;
             fs::rename(temp, path)?;
-            updates.insert(rule.rule_url.clone(), key.clone());
+            updates.insert(source, key.clone());
             rule.rule_digest = key;
         }
         self.expand_rules(dir)

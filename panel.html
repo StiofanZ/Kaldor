@@ -226,13 +226,14 @@ function targets(){
  }
  return entries;
 }
-function selectors(){return [byId('fallback'),byId('dnsFallback'),...document.querySelectorAll('#rules [data-key=outbound],#dnsRules [data-key=outbound]')];}
+function selectors(){return [byId('fallback'),byId('dnsFallback'),...document.querySelectorAll('#rules [data-key=outbound],#rules [data-key=download_outbound],#dnsRules [data-key=outbound]')];}
 function populate(select,selected){
  select.replaceChildren(...targets().map(([id,label])=>new Option(label,id)));
  if(select.closest('#dnsPanel')){
   select.prepend(new Option('按查询域名匹配分流规则','@rules'));
   if(select===byId('dnsFallback'))select.prepend(new Option('沿用解析器连接的出站规则',''));
  }
+ if(select.dataset.key==='download_outbound')select.querySelector('option[value=reject]').remove();
  select.value=selected;
 }
 function updateMode(){
@@ -398,6 +399,8 @@ function rule(data={}){
  const box=entry(byId('rules'),remote?'远程规则集':standard?'标准规则':'匹配条件');
  if(remote){
   const url=field(box,'rule_url','规则文件 HTTPS 地址',data.rule_url,'url');url.required=true;url.placeholder='https://example.org/rules.list';
+  const download=field(box,'download_outbound','下载出口','',[]);populate(download,targetId(data.download_outbound||'direct'));
+  box.dataset.savedDownload=data.download_outbound||'direct';
   box.dataset.savedUrl=data.rule_url;box.dataset.digest=data.rule_digest||'';
   const reload=button('重新下载',()=>{box.dataset.digest='';byId('result').textContent='保存并应用时将重新下载规则文件。';});
   box.querySelector('.row-tools').prepend(reload);
@@ -411,7 +414,7 @@ function rule(data={}){
  const suffix=field(box,'domain_suffix','域名后缀',data.domain_suffix);suffix.pattern='([^.]+\\.)*[^.]+\\.?';suffix.title='填写域名或其后缀，例如 example.org';
  const port=field(box,'port','目的端口',data.port,'number');port.min=1;port.max=65535;
  }
- const select=field(box,'outbound','出口','',[]);populate(select,targetId(data.outbound||'direct'));
+ const select=field(box,'outbound',remote?'匹配出口':'出口','',[]);populate(select,targetId(data.outbound||'direct'));
  addMoveButtons(box);
 }
 function dnsRule(data={}){
@@ -434,11 +437,11 @@ function rows(id){
   for(const e of box.querySelectorAll('[data-key]')){
    if(e.disabled)continue;
    const k=e.dataset.key;
-   const v=k==='outbound'?outbound(e):(k==='secret'?e.value:e.value.trim());
+   const v=(k==='outbound'||k==='download_outbound')?outbound(e):(k==='secret'?e.value:e.value.trim());
    if(v)obj[k]=k==='port'?Number(v):v;
   }
   if(obj.standard)return readStandard(obj.standard,obj.outbound);
-  if(obj.rule_url && obj.rule_url===box.dataset.savedUrl && box.dataset.digest)obj.rule_digest=box.dataset.digest;
+  if(obj.rule_url && obj.rule_url===box.dataset.savedUrl && obj.download_outbound===box.dataset.savedDownload && box.dataset.digest)obj.rule_digest=box.dataset.digest;
   return obj;
  });
 }

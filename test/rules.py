@@ -18,7 +18,7 @@ def verify(root, env, conf, control, get):
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     tls.load_cert_chain(root/"ca.pem",root/"key")
     server.socket = tls.wrap_socket(server.socket,server_side=True)
-    env["CURL_CA_BUNDLE"] = str(root/"ca.pem")
+    env["SSL_CERT_FILE"] = str(root/"ca.pem")
     env["NO_PROXY"] = "127.0.0.1"
     threading.Thread(target=server.serve_forever,daemon=True).start()
     def manual(port):

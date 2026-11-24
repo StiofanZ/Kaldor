@@ -56,7 +56,7 @@ pub enum OutboundMode {
     Rules,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
     pub name: String,
@@ -96,6 +96,8 @@ pub struct Rule {
     standard: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     rule_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    download_outbound: Option<String>,
     #[serde(skip_serializing_if = "String::is_empty")]
     rule_digest: String,
     #[serde(skip)]
@@ -161,7 +163,7 @@ fn matches_suffix(domain: &str, suffix: &str) -> bool {
             .get(start..)
             .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
 }
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Upstream {
     // Original row selected in the editor. Used only when applying a change.
@@ -281,6 +283,13 @@ impl Config {
                 names.contains(rule.outbound.as_str()),
                 "unknown rule outbound"
             );
+            if let Some(name) = &rule.download_outbound {
+                ensure!(
+                    !rule.rule_url.is_empty() && name != "reject" && names.contains(name.as_str()),
+                    "rule {}: invalid download outbound",
+                    index + 1
+                );
+            }
             let has_condition = rule.source.is_some()
                 || rule.destination.is_some()
                 || rule.network.is_some()

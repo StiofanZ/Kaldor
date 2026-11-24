@@ -71,7 +71,7 @@ async fn execute() -> Result<()> {
             let dir = Path::new(&args[2])
                 .parent()
                 .context("missing configuration directory")?;
-            cfg.prepare_rule_files(&old, dir)?;
+            cfg.prepare_rule_files(&old, dir).await?;
             let json = serde_json::to_string(&cfg)?;
             ensure!(json.len() < 65536, "saved configuration exceeds size limit");
             println!("{json}");
