@@ -1,5 +1,5 @@
 use super::*;
-use crate::activity::Access;
+use crate::{activity::Access, config::DohProvider};
 use boring::ssl::SslConnector;
 use bytes::Bytes;
 use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode};
@@ -9,14 +9,12 @@ use hyper_util::rt::TokioIo;
 use meow_common::Network;
 use std::sync::Mutex;
 
-const HOST: &str = "cloudflare-dns.com";
-const RESOLVER_IP: Ipv4Addr = Ipv4Addr::new(1, 1, 1, 1);
 const LIMIT: Duration = Duration::from_secs(12);
 type Sender = http1::SendRequest<Full<Bytes>>;
 
 pub(super) struct Resolver {
     tls: SslConnector,
-    idle: Mutex<Vec<(String, Sender)>>,
+    idle: Mutex<Vec<(String, DohProvider, Sender)>>,
     slots: Arc<Semaphore>,
 }
 
@@ -33,11 +31,13 @@ impl Resolver {
         &self,
         engine: &Engine,
         src: SocketAddr,
-        resolver: &Target,
+        provider: DohProvider,
         outbound: &str,
     ) -> Result<Sender> {
-        let up = engine.dial_tcp(src.ip(), resolver, outbound).await?;
-        let tls = tokio_boring::connect(self.tls.configure()?, HOST, up)
+        let (hostname, ip) = provider.endpoint();
+        let target = Target::from_socket((ip, 443).into());
+        let up = engine.dial_tcp(src.ip(), &target, outbound).await?;
+        let tls = tokio_boring::connect(self.tls.configure()?, hostname, up)
             .await
             .map_err(|e| anyhow::anyhow!("DoH TLS: {e}"))?;
         let (tx, connection) = http1::handshake(TokioIo::new(tls)).await?;
@@ -49,24 +49,24 @@ impl Resolver {
         &self,
         engine: &Engine,
         src: SocketAddr,
-        resolver: &Target,
+        provider: DohProvider,
         outbound: &str,
         wire: Bytes,
     ) -> Result<Bytes> {
         let reused = {
             let mut idle = self.idle.lock().unwrap();
-            idle.retain(|(_, tx)| !tx.is_closed());
+            idle.retain(|(_, _, tx)| !tx.is_closed());
             idle.iter()
-                .position(|(key, _)| key == outbound)
-                .map(|i| idle.swap_remove(i).1)
+                .position(|(key, upstream, _)| key == outbound && *upstream == provider)
+                .map(|i| idle.swap_remove(i).2)
         };
         let mut tx = match reused {
             Some(tx) => tx,
-            None => self.connect(engine, src, resolver, outbound).await?,
+            None => self.connect(engine, src, provider, outbound).await?,
         };
         let request = || {
             Request::post("/dns-query")
-                .header("host", HOST)
+                .header("host", provider.endpoint().0)
                 .header("content-type", "application/dns-message")
                 .header("accept", "application/dns-message")
                 .body(Full::new(wire.clone()))
@@ -75,7 +75,7 @@ impl Resolver {
         let response = match tx.try_send_request(request()?).await {
             Ok(response) => response,
             Err(e) if e.message().is_some() => {
-                tx = self.connect(engine, src, resolver, outbound).await?;
+                tx = self.connect(engine, src, provider, outbound).await?;
                 tx.send_request(request()?).await?
             }
             Err(e) => return Err(e.into_error().into()),
@@ -105,7 +105,7 @@ impl Resolver {
             .to_bytes();
         let mut idle = self.idle.lock().unwrap();
         if idle.len() < 8 && !tx.is_closed() {
-            idle.push((outbound.to_owned(), tx));
+            idle.push((outbound.to_owned(), provider, tx));
         }
         Ok(data)
     }
@@ -125,10 +125,6 @@ impl Resolver {
                 && query.queries.len() == 1,
             "expected a single DNS question"
         );
-        let resolver = &Target {
-            host: RESOLVER_IP.to_string(),
-            port: 443,
-        };
         let selected = if engine.cfg.uses_dns_rules() {
             // A literal dot within a wire label must never become a suffix boundary.
             let name = query.queries[0].name().to_ascii().replace(r"\.", r"\056");
@@ -142,15 +138,18 @@ impl Resolver {
             None
         };
         let outbound = selected.unwrap_or_else(|| {
+            // Preserve the resolver-connection rule contract before selecting the endpoint for this exit.
+            let (host, ip) = DohProvider::Cloudflare.endpoint();
             engine.cfg.route(
                 src.ip(),
                 service.reserved,
-                resolver.addr(),
+                Some(ip.into()),
                 443,
-                HOST,
+                host,
                 Network::Tcp,
             )
         });
+        let provider = engine.cfg.dns_provider(outbound);
         let wire = Bytes::from(wire);
         let (outbound, result) = engine
             .via(outbound, |node| {
@@ -158,7 +157,7 @@ impl Resolver {
                 let wire = wire.clone();
                 async move {
                     let data =
-                        timeout(LIMIT, self.exchange(engine, src, resolver, node, wire)).await??;
+                        timeout(LIMIT, self.exchange(engine, src, provider, node, wire)).await??;
                     let reply = Message::from_vec(&data)?;
                     ensure!(
                         reply.metadata.id == query.metadata.id
@@ -176,11 +175,12 @@ impl Resolver {
                 }
             })
             .await;
+        let (hostname, ip) = provider.endpoint();
         match engine.activity.record(
             Access {
                 source: src,
-                target: resolver,
-                domain: HOST,
+                target: &Target::from_socket((ip, 443).into()),
+                domain: hostname,
                 ingress: "透明 DNS",
                 transport: "TCP",
                 outbound,

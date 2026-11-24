@@ -12,6 +12,9 @@ import threading
 
 PUBLIC = "1.1.1.1"
 AUTHORITY = "cloudflare-dns.com"
+ALI_IP = "223.5.5.5"
+ALI_HOST = "dns.alidns.com"
+ALI_ANSWER = "203.0.113.44"
 WAN = "198.51.100.2"
 ENCRYPTED = "203.0.113.22"
 PLAIN = "203.0.113.11"
@@ -30,10 +33,11 @@ class Doh(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_POST(self):
-        assert self.headers["Host"] == AUTHORITY and self.path == "/dns-query"
+        assert self.headers["Host"] == self.server.hostname and self.path == "/dns-query"
         assert self.headers["Content-Type"] == "application/dns-message"
         query = self.rfile.read(int(self.headers["Content-Length"]))
-        body = response(query, DIRECT_DOH if self.client_address[0]=="198.51.100.1" else ENCRYPTED)
+        answer = DIRECT_DOH if self.client_address[0]=="198.51.100.1" else ENCRYPTED
+        body = response(query, ALI_ANSWER if self.server.hostname==ALI_HOST else answer)
         self.send_response(200)
         self.send_header("Content-Type", "application/dns-message")
         self.send_header("Content-Length", str(len(body)))
@@ -71,6 +75,16 @@ def server(root):
 
     good.set_servername_callback(select_cert)
     https = http.server.ThreadingHTTPServer((PUBLIC, 443), Doh)
+    https.hostname = AUTHORITY
+    ali=http.server.ThreadingHTTPServer((ALI_IP,443),Doh)
+    ali.hostname=ALI_HOST
+    ali_tls=context(root/"ali.crt",root/"ali.key")
+    def ali_cert(sock,name,_):
+        assert name==ALI_HOST
+        if (root/"wrong-ali-cert").exists(): sock.context=good
+    ali_tls.set_servername_callback(ali_cert)
+    ali.socket=ali_tls.wrap_socket(ali.socket,server_side=True)
+    threading.Thread(target=ali.serve_forever,daemon=True).start()
     https.socket = good.wrap_socket(https.socket, server_side=True)
     for fixture in [socketserver.UDPServer((WAN, 53), PlainUDP), socketserver.TCPServer((WAN, 53), PlainTCP)]:
         threading.Thread(target=fixture.serve_forever, daemon=True).start()
@@ -116,6 +130,13 @@ def verify(root, command, spawn, wait, client, wan, sing, conf, control, activit
     (root / "dns.ext").write_text("subjectAltName=DNS:" + AUTHORITY + "\n")
     command("openssl", "x509", "-req", "-in", root / "dns.csr", "-CA", root / "ca.pem", "-CAkey", root / "key",
             "-CAcreateserial", "-days", "1", "-extfile", root / "dns.ext", "-out", root / "dns.crt")
+    command(*wan,"ip","addr","add",ALI_IP+"/32","dev","lo")
+    command("ip","route","add",ALI_IP+"/32","via",WAN,"dev","wan0")
+    command("openssl","req","-new","-nodes","-newkey","rsa:2048","-subj","/CN="+ALI_HOST,
+            "-out",root/"ali.csr","-keyout",root/"ali.key")
+    (root/"ali.ext").write_text("subjectAltName=DNS:"+ALI_HOST+"\n")
+    command("openssl","x509","-req","-in",root/"ali.csr","-CA",root/"ca.pem","-CAkey",root/"key",
+            "-CAcreateserial","-days","1","-extfile",root/"ali.ext","-out",root/"ali.crt")
     spawn(*wan, sys.executable, script, "server", str(root))
     wait(lambda: ":443 " in command(*wan, "ss", "-ltn"))
     remote = copy.deepcopy(sing_conf)
@@ -172,6 +193,20 @@ def verify(root, command, spawn, wait, client, wan, sing, conf, control, activit
     assert lookup(selected,WAN,"udp","blocked")=="rcode 2"
     assert lookup(selected,WAN,"udp","safe.blocked")==DIRECT_DOH
     command("ip","route","replace","unreachable",PUBLIC+"/32")
+    settings["dns"]["direct_resolver"]="alidns"
+    control("configure",conf("split-resolvers.json",settings))
+    for proto in ("udp","tcp"):
+        for kind,local,proxied in [("A",ALI_ANSWER,ENCRYPTED),("AAAA","2001:db8::44","2001:db8::22")]:
+            assert lookup(selected,WAN,proto,"safe.blocked",kind)==local
+            assert lookup(selected,WAN,proto,"blocked",kind)==proxied
+    pairs={(r["target"],r["outbound"],r["result"]) for r in activity()["recent"]}
+    assert (ALI_HOST,"direct","opened") in pairs and (AUTHORITY,"node","opened") in pairs
+    (root/"wrong-ali-cert").touch()
+    control("configure",conf("split-resolvers.json",settings))
+    assert lookup(selected,WAN,"udp","safe.blocked")=="rcode 2"
+    assert lookup(selected,WAN,"udp","blocked")==ENCRYPTED
+    (root/"wrong-ali-cert").unlink()
+    print("Cloudflare direct unreachable: direct AliDNS and proxied Cloudflare answers, TLS hostname rejection and endpoint logging PASS",flush=True)
     modes["dns"]={"default":"reject","rules":[]}
     print("DNS query policy: on-wire direct/proxy answers, A/AAAA over UDP/TCP, domain precedence, ordinary rules and no direct retry PASS",flush=True)
     for mode, expected in [("global",ENCRYPTED),("direct",PLAIN),("rules","rcode 2")]:

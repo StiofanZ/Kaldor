@@ -91,7 +91,7 @@ output{overflow-wrap:anywhere}
 <section class="card" id="dnsPanel" data-config inert role="tabpanel" aria-labelledby="tab-dns" hidden>
 <div class="section-head"><button type="button" id="newDnsRule">添加 DNS 规则</button></div>
 <p class="hint">规则判定模式下，按查询域名从上到下选择加密 DNS 出口。域名后缀包括该域名及其子域名。</p>
-<label>DNS 未命中时<select id="dnsFallback"></select></label><div id="dnsRules"></div></section>
+<div class="fields"><label>DNS 未命中时<select id="dnsFallback"></select></label><label>直连加密 DNS<select id="directResolver"><option value="cloudflare">Cloudflare</option><option value="alidns">阿里公共 DNS</option></select></label></div><small>出口为 direct 时使用所选解析器；代理节点使用 Cloudflare。</small><div id="dnsRules"></div></section>
 <div class="actions" data-config inert><button type="submit">保存并应用</button><output role="status" id="result"></output></div></form>
 <section class="card" id="connections" role="tabpanel" aria-labelledby="tab-connections" hidden>
 <div class="activity-head"><output role="status"></output><button type="button">刷新连接</button></div>
@@ -479,7 +479,7 @@ async function load(){
  if(!r.ok||!s.ok)throw Error('无法读取配置，请重新登录管理页。');
  const c=await r.json();const status=(await s.text()).trim();byId('status').dataset.state=status;byId('status').textContent=({running:'运行中',degraded:'透明路由异常',stopped:'已停止',uninstalled:'未安装'}[status]||'状态未知');
  byId('listenPort').value=c.listen_port??6000;byId('enabled').checked=c.enabled;
- byId('rules').textContent='';byId('dnsRules').textContent='';byId('policies').textContent='';byId('nodes').textContent='';(c.upstreams||[]).forEach(node);(c.policies||[]).forEach(policy);(c.rules||[]).forEach(rule);(c.dns?.rules||[]).forEach(dnsRule);refresh();byId('dnsFallback').value=c.dns?.default?targetId(c.dns.default):'';byId('fallback').value=targetId(c.default||'direct');
+ byId('rules').textContent='';byId('dnsRules').textContent='';byId('policies').textContent='';byId('nodes').textContent='';(c.upstreams||[]).forEach(node);(c.policies||[]).forEach(policy);(c.rules||[]).forEach(rule);(c.dns?.rules||[]).forEach(dnsRule);refresh();byId('directResolver').value=c.dns?.direct_resolver||'cloudflare';byId('dnsFallback').value=c.dns?.default?targetId(c.dns.default):'';byId('fallback').value=targetId(c.default||'direct');
  byId('outboundMode').value=c.outbound_mode||'rules';
  byId('globalOutbound').value=c.global_outbound?targetId(c.global_outbound):'';
  updateMode();lockConfig(false);
@@ -499,8 +499,10 @@ byId('settings').onsubmit=async e=>{
  const submit=e.submitter||document.querySelector('button[type=submit]');submit.disabled=true;const out=byId('result');out.textContent='正在应用…';
  try{const config={enabled:byId('enabled').checked,upstreams:rows('nodes'),rules:rows('rules'),default:outbound(byId('fallback'))};
  const dnsRules=rows('dnsRules'),dnsFallback=byId('dnsFallback');
- if(dnsRules.length || dnsFallback.value){
+ const directResolver=byId('directResolver').value;
+ if(dnsRules.length || dnsFallback.value || directResolver!=='cloudflare'){
   config.dns={rules:dnsRules};
+  if(directResolver!=='cloudflare')config.dns.direct_resolver=directResolver;
   if(dnsFallback.value)config.dns.default=outbound(dnsFallback);
   for(const [index,r] of dnsRules.entries()){
    const kind={exact:'DOMAIN',suffix:'DOMAIN-SUFFIX',keyword:'DOMAIN-KEYWORD'}[r.type];

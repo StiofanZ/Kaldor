@@ -6,9 +6,27 @@ const USE_QUERY_RULES: &str = "@rules";
 #[serde(default, deny_unknown_fields)]
 pub(super) struct DnsRouting {
     #[serde(skip_serializing_if = "Option::is_none")]
+    direct_resolver: Option<DohProvider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     default: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     rules: Vec<QueryRule>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DohProvider {
+    Cloudflare,
+    Alidns,
+}
+
+impl DohProvider {
+    pub fn endpoint(self) -> (&'static str, std::net::Ipv4Addr) {
+        match self {
+            Self::Cloudflare => ("cloudflare-dns.com", std::net::Ipv4Addr::new(1, 1, 1, 1)),
+            Self::Alidns => ("dns.alidns.com", std::net::Ipv4Addr::new(223, 5, 5, 5)),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -29,7 +47,7 @@ enum MatchType {
 
 impl DnsRouting {
     pub(super) fn is_empty(&self) -> bool {
-        self.default.is_none() && self.rules.is_empty()
+        self.direct_resolver.is_none() && self.default.is_none() && self.rules.is_empty()
     }
 
     pub(super) fn validate(&self, names: &HashSet<&str>) -> Result<()> {
@@ -52,8 +70,17 @@ impl DnsRouting {
 }
 
 impl Config {
+    pub fn dns_provider(&self, outbound: &str) -> DohProvider {
+        if outbound == "direct" {
+            self.dns.direct_resolver.unwrap_or(DohProvider::Cloudflare)
+        } else {
+            DohProvider::Cloudflare
+        }
+    }
+
     pub fn uses_dns_rules(&self) -> bool {
-        self.outbound_mode == OutboundMode::Rules && !self.dns.is_empty()
+        self.outbound_mode == OutboundMode::Rules
+            && (self.dns.default.is_some() || !self.dns.rules.is_empty())
     }
 
     /// None preserves routing for the resolver's own HTTPS connection.

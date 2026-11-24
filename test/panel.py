@@ -135,10 +135,10 @@ addEventListener('load',async ()=>{
   dnsBox.querySelector('[data-key=value]').value='example.org';
   const dnsNode=byId('nodes').firstElementChild;
   dnsBox.querySelector('[data-key=outbound]').value=dnsNode.id;
-  byId('dnsFallback').value='@rules';
+  byId('dnsFallback').value='@rules';byId('directResolver').value='alidns';
   byId('result').textContent='';form.requestSubmit();await new Promise(r=>setTimeout(r,20));
-  assert(saved.dns.default==='@rules' && saved.dns.rules[0].type==='suffix' && saved.dns.rules[0].outbound===dnsNode.querySelector('[data-key=name]').value,'DNS save');
-  config=saved;await load();assert(rows('dnsRules')[0].value==='example.org' && byId('dnsFallback').value==='@rules','DNS reload');
+  assert(saved.dns.direct_resolver==='alidns' && saved.dns.default==='@rules' && saved.dns.rules[0].type==='suffix' && saved.dns.rules[0].outbound===dnsNode.querySelector('[data-key=name]').value,'DNS save');
+  config=saved;await load();assert(byId('directResolver').value==='alidns' && rows('dnsRules')[0].value==='example.org' && byId('dnsFallback').value==='@rules','DNS reload');
   for(const id of ['connections','access']){
    tab(id).click();await new Promise(resolve=>setTimeout(resolve,20));
    assert(active(id) && form.hidden && byId(id).innerText.includes('example.test:443'),'activity '+id);

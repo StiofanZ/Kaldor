@@ -2,6 +2,7 @@ mod dns;
 mod rules;
 use anyhow::{Context, Result, ensure};
 use dns::DnsRouting;
+pub use dns::DohProvider;
 use ipnet::IpNet;
 use meow_common::Network;
 use serde::{Deserialize, Deserializer, Serialize};
